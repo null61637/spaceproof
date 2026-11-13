@@ -1,9 +1,13 @@
 import {
+  TransactionNotFoundError,
+  TransactionReceiptNotFoundError,
   createPublicClient,
   getAddress,
   http,
   isAddress,
+  isAddressEqual,
   parseAbi,
+  parseEventLogs,
   type Address,
   type PublicClient,
   type Transport,
@@ -12,6 +16,7 @@ import {
   AnchorLookup,
   AnchorReader,
   AnchorTarget,
+  AnchorTransaction,
   UnconfiguredAnchorReader,
 } from './anchor-reader';
 
@@ -24,7 +29,14 @@ export const ANCHOR_READ_ABI = parseAbi([
   'function anchoredAt(bytes32 hash) view returns (uint64 timestamp)',
 ]);
 
+// The event a successful anchor() emits. Checked against the versioned ABI
+// by the same test.
+export const ANCHOR_EVENT_ABI = parseAbi([
+  'event Anchored(bytes32 indexed hash, uint64 timestamp)',
+]);
+
 const CONTENT_HASH = /^[0-9a-f]{64}$/;
+const TRANSACTION_HASH = /^0x[0-9a-f]{64}$/;
 const RPC_TIMEOUT_MS = 5000;
 
 /**
@@ -66,6 +78,54 @@ export class AvalancheAnchorReader extends AnchorReader {
       throw new RangeError('The contract returned a timestamp out of range');
     }
     return { state: 'ANCHORED', anchoredAt };
+  }
+
+  /**
+   * What became of a transaction, read from the chain: its receipt (did it
+   * succeed, to which address, in which block) and the Anchored events that
+   * the configured contract, and only it, emitted in it.
+   */
+  async transaction(txHash: string): Promise<AnchorTransaction> {
+    if (!TRANSACTION_HASH.test(txHash)) {
+      throw new RangeError('Not a transaction hash');
+    }
+    const hash = txHash as `0x${string}`;
+    await this.confirmChain();
+    let receipt: Awaited<ReturnType<PublicClient['getTransactionReceipt']>>;
+    try {
+      receipt = await this.client.getTransactionReceipt({ hash });
+    } catch (error) {
+      if (!(error instanceof TransactionReceiptNotFoundError)) throw error;
+      // No receipt: either waiting to be mined, or unknown to the node.
+      try {
+        await this.client.getTransaction({ hash });
+        return { state: 'PENDING' };
+      } catch (inner) {
+        if (inner instanceof TransactionNotFoundError) {
+          return { state: 'UNKNOWN' };
+        }
+        throw inner;
+      }
+    }
+    const latest = await this.client.getBlockNumber({ cacheTime: 0 });
+    const events = parseEventLogs({
+      abi: ANCHOR_EVENT_ABI,
+      eventName: 'Anchored',
+      logs: receipt.logs.filter((log) =>
+        isAddressEqual(log.address, this.contractAddress),
+      ),
+    });
+    return {
+      state: 'MINED',
+      success: receipt.status === 'success',
+      to: receipt.to,
+      blockNumber: receipt.blockNumber,
+      confirmations: Number(latest - receipt.blockNumber) + 1,
+      anchored: events.map((event) => ({
+        contentHash: event.args.hash.slice(2),
+        anchoredAt: new Date(Number(event.args.timestamp) * 1000),
+      })),
+    };
   }
 
   /** Once per process: the RPC must be Fuji, or nothing it says counts. */

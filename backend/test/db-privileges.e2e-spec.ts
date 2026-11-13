@@ -585,7 +585,8 @@ describe('Database privileges (e2e)', () => {
   // The anchoring record of a certificate. The runtime role may create it and
   // track the sending; what it anchors, and a confirmed result, are fixed.
   describe('anchors', () => {
-    const CONTRACT = '0xb5cA7811682676e0B7a8fc568B28dbf6f841c8CF';
+    // Not a real contract: rows left by this suite must never be sendable.
+    const CONTRACT = '0x000000000000000000000000000000000000e2e1';
     const TX = `0x${'ab'.repeat(32)}`;
     const UNIQUE_VIOLATION = '23505';
     const FOREIGN_KEY_VIOLATION = '23503';

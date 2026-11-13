@@ -127,9 +127,18 @@ Sin archivo: recalcula el manifiesto desde la base y consulta el anclaje. Sirve 
     "receivedSha256": "<SHA-256 del archivo recibido>",
     "receivedSizeBytes": 1048576
   },
-  "anchoredAt": null
+  "anchoredAt": null,
+  "anchor": null
 }
 ```
+
+`anchor` es el registro de anclaje que SpaceProof guarda para el certificado, o `null` si no tiene (certificados emitidos sin contrato configurado):
+
+```json
+{ "status": "CONFIRMED", "txHash": "0x…", "chainId": 43113, "contractAddress": "0x…" }
+```
+
+`status` es `PENDING`, `SUBMITTED`, `CONFIRMED` o `FAILED`; `txHash` puede ser `null`. Es informativo (estado del envío, transacción para buscar en un explorador): **nunca es lo que hace `VALID` un resultado**; eso lo decide la cadena, consultada en cada verificación.
 
 ### Comprobaciones
 
@@ -147,14 +156,19 @@ Se evalúa en este orden; gana la primera fila que aplica.
 |---|---|---|---|
 | `INVALID` | `FILE_MISMATCH` | `file = MISMATCH` | El archivo no es el certificado: fue modificado o es otro |
 | `INVALID` | `RECORD_MISMATCH` | `record = MISMATCH` | Los datos del certificado fueron alterados |
-| `VALID` | `null` | `anchor = ANCHORED` | Coincide con lo certificado y con el registro en Avalanche (`anchoredAt`) |
-| `PENDING` | `NOT_ANCHORED` | La cadena respondió y el hash no está | Coincide; todavía no está registrado en Avalanche |
+| `UNVERIFIABLE` | `ANCHOR_TARGET_MISMATCH` | El registro `anchor` nombra otro contrato u otra cadena que los configurados | Coincide con el registro de SpaceProof; **no** se pudo comprobar en Avalanche |
+| `INVALID` | `ANCHOR_RECORD_MISMATCH` | El hash está en la cadena, pero el registro `anchor` figura `CONFIRMED` con una fecha o una transacción que la cadena no respalda (revirtió, no existe, es de otro contrato o de otro hash) | El registro de anclaje de SpaceProof no coincide con la blockchain |
+| `VALID` | `null` | `anchor = ANCHORED` y, si hay registro `CONFIRMED`, coincide con la cadena | Coincide con lo certificado y con el registro en Avalanche (`anchoredAt`) |
+| `INVALID` | `NOT_ANCHORED` | La cadena respondió que el hash no está, y el registro `anchor` figura `CONFIRMED` | El registro no coincide con la blockchain |
+| `PENDING` | `NOT_ANCHORED` | La cadena respondió y el hash no está (sin registro, o registro sin confirmar) | Coincide; todavía no está registrado en Avalanche |
 | `UNVERIFIABLE` | `ANCHOR_NOT_CONFIGURED` | No hay integración con Avalanche | Coincide con el registro de SpaceProof; **no** se pudo comprobar en Avalanche: integración pendiente |
 | `UNVERIFIABLE` | `ANCHOR_UNAVAILABLE` | La consulta a la cadena falló (RPC) | Coincide con el registro de SpaceProof; **no** se pudo comprobar en Avalanche: reintentar |
 
 Reglas que la implementación garantiza:
 
-- `VALID` exige una respuesta positiva de la cadena. Ni un error de RPC ni la falta de integración producen `VALID`.
+- `VALID` exige una respuesta positiva de la cadena, obtenida en esa misma verificación. Ni un error de RPC, ni la falta de integración, ni el registro `anchor` de la base producen `VALID`.
+- La verificación solo lee: nunca corrige el registro `anchor`.
+- Con `ANCHOR_RECORD_MISMATCH`, `checks.anchor` es `ANCHORED` (el hash está en la cadena): lo inconsistente es el registro de SpaceProof.
 - `VALID` en `GET …/verify` no cubre el archivo (`checks.file` es `NOT_CHECKED`).
 - `UNVERIFIABLE` no significa «alterado»: las comprobaciones de archivo y registro pasaron, y lo dice `checks`.
 - Un certificado con una versión de hash desconocida no se puede verificar: `500`, no `INVALID`.
@@ -171,6 +185,9 @@ Devuelve el texto canónico exacto cuyo SHA-256 es `contentHash`, reconstruido d
 
 `POST /api/certificates` con cuerpo JSON (`title`, `recipient`) ya no existe: responde `415`. No se pueden emitir certificados sin archivo. Los certificados v1 existentes se siguen listando, consultando y verificando.
 
-## Anclaje: qué existe y qué no
+## Anclaje
 
-Existe un puerto de solo lectura (`AnchorReader.lookup(contentHash)`) con una única implementación, que responde «no configurado». No hay contrato, dirección, cliente de cadena, tabla `Anchor` ni envío de transacciones: eso es F5 y F6. F6 reemplaza la implementación del puerto por la lectura real del contrato y distingue, con la tabla `Anchor`, entre «todavía no anclado» (`PENDING`) y «figura confirmado pero no está en la cadena» (`INVALID`).
+- La verificación lee en vivo el contrato `SpaceProofAnchor` de Avalanche Fuji cuando están configuradas `ANCHOR_RPC_URL` y `ANCHOR_CONTRACT_ADDRESS`. Sin ellas, responde `ANCHOR_NOT_CONFIGURED`.
+- Con esas dos variables, cada certificado se emite junto con su registro `anchor` en `PENDING`. `POST /api/certificates` no cambia: responde el certificado, sin el registro.
+- Con `ANCHOR_PRIVATE_KEY` además, el backend envía el anclaje por su cuenta después de responder la emisión, y lo confirma leyendo la cadena. El estado se ve en `anchor.status` de la verificación. Probado solo contra una cadena simulada (ver [ESTADO_Y_PENDIENTES.md](ESTADO_Y_PENDIENTES.md), sección 11.10).
+- En la cadena solo se registra el hash del certificado (`contentHash`): ni el archivo ni los metadatos.

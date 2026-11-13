@@ -1,14 +1,21 @@
 import {
+  BaseError,
+  ContractFunctionRevertedError,
   createPublicClient,
+  encodeFunctionData,
   getAddress,
   http,
   isAddress,
+  keccak256,
   parseAbi,
   type Address,
+  type Hex,
   type PublicClient,
   type Transport,
 } from 'viem';
 import { privateKeyToAccount, type PrivateKeyAccount } from 'viem/accounts';
+import { prepareTransactionRequest } from 'viem/actions';
+import { avalancheFuji } from 'viem/chains';
 import { ANCHOR_CHAIN_ID } from '../certificates/avalanche-anchor-reader';
 
 // What the signer needs from SpaceProofAnchor. A test checks these against
@@ -21,7 +28,38 @@ export const ANCHOR_SIGNER_ABI = parseAbi([
   'error AlreadyAnchored(bytes32 hash, uint64 anchoredAt)',
 ]);
 
+/** Injection token: the AnchorSigner, or null when no key is configured. */
+export const ANCHOR_SIGNER = Symbol('ANCHOR_SIGNER');
+
+/** A signed anchor() transaction that has not been sent. */
+export interface SignedAnchor {
+  /** Hash the transaction will have on chain, known before sending it. */
+  txHash: Hex;
+  serializedTransaction: Hex;
+}
+
+/** What the anchoring service needs from the signer. */
+export interface AnchorSending {
+  readonly contractAddress: string;
+  assertReady(): Promise<void>;
+  sign(contentHash: string): Promise<SignedAnchor>;
+  broadcast(signed: SignedAnchor): Promise<void>;
+}
+
+/**
+ * The contract would revert this anchor() call: nothing was signed or sent.
+ * `reason` is the contract's error name (AlreadyAnchored, NotOwner,
+ * EmptyHash) or "Reverted".
+ */
+export class AnchorRejectedError extends Error {
+  constructor(readonly reason: string) {
+    super(`The anchor contract refuses the call: ${reason}`);
+    this.name = 'AnchorRejectedError';
+  }
+}
+
 const PRIVATE_KEY = /^0x[0-9a-fA-F]{64}$/;
+const CONTENT_HASH = /^[0-9a-f]{64}$/;
 const RPC_TIMEOUT_MS = 5000;
 
 /**
@@ -42,9 +80,10 @@ export class AnchorSignerConfigError extends Error {
  * anything is signed, that it is on Avalanche Fuji and that the contract
  * accepts it.
  *
- * It does not send anything yet: the anchoring service uses it.
+ * Signing and sending are two steps (sign, broadcast) so the caller can
+ * record the transaction hash before anything leaves this process.
  */
-export class AnchorSigner {
+export class AnchorSigner implements AnchorSending {
   readonly #account: PrivateKeyAccount;
   readonly #client: PublicClient;
   #ready = false;
@@ -89,6 +128,71 @@ export class AnchorSigner {
       );
     }
     this.#ready = true;
+  }
+
+  /**
+   * Signs an anchor(contentHash) transaction for the configured contract and
+   * returns it with its hash. Nothing is sent. The only data in the
+   * transaction is the 32-byte certificate hash.
+   *
+   * Rejects with AnchorRejectedError when the contract would revert the call
+   * (checked by simulating it), and with the RPC error when the chain could
+   * not be asked.
+   */
+  async sign(contentHash: string): Promise<SignedAnchor> {
+    if (!CONTENT_HASH.test(contentHash)) {
+      throw new RangeError('Not a certificate hash');
+    }
+    await this.assertReady();
+    const call = {
+      abi: ANCHOR_SIGNER_ABI,
+      functionName: 'anchor',
+      args: [`0x${contentHash}`],
+    } as const;
+    try {
+      await this.#client.simulateContract({
+        ...call,
+        address: this.contractAddress,
+        account: this.#account,
+      });
+    } catch (error) {
+      const revert =
+        error instanceof BaseError
+          ? error.walk(
+              (cause) => cause instanceof ContractFunctionRevertedError,
+            )
+          : null;
+      if (revert instanceof ContractFunctionRevertedError) {
+        throw new AnchorRejectedError(revert.data?.errorName ?? 'Reverted');
+      }
+      throw error;
+    }
+    // Nonce (counting transactions still pending), gas and fees from the RPC.
+    const request = await prepareTransactionRequest(this.#client, {
+      account: this.#account,
+      chain: avalancheFuji,
+      to: this.contractAddress,
+      data: encodeFunctionData(call),
+    });
+    const serializedTransaction = await this.#account.signTransaction({
+      ...request,
+      chainId: ANCHOR_CHAIN_ID,
+    } as Parameters<PrivateKeyAccount['signTransaction']>[0]);
+    return {
+      txHash: keccak256(serializedTransaction),
+      serializedTransaction,
+    };
+  }
+
+  /**
+   * Sends a transaction signed by sign(). A rejection does not mean it was
+   * not sent: the caller settles the outcome by the transaction hash.
+   */
+  async broadcast(signed: SignedAnchor): Promise<void> {
+    await this.assertReady();
+    await this.#client.sendRawTransaction({
+      serializedTransaction: signed.serializedTransaction,
+    });
   }
 
   /** Never the key: what logging or serializing this object shows. */

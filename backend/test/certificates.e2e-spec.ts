@@ -529,6 +529,7 @@ describe('Certificates (e2e)', () => {
           receivedSizeBytes: file.length,
         },
         anchoredAt: null,
+        anchor: null,
       });
     });
 
@@ -716,6 +717,7 @@ describe('Certificates (e2e)', () => {
         hashVersion: 1,
         file: null,
         anchoredAt: null,
+        anchor: null,
       });
     });
 
@@ -865,7 +867,8 @@ describe('Certificates with a chain reader (e2e)', () => {
 describe('Issuing with anchoring configured (e2e)', () => {
   const target: AnchorTarget = {
     chainId: 43113,
-    contractAddress: '0xb5cA7811682676e0B7a8fc568B28dbf6f841c8CF',
+    // Not a real contract: rows left by this suite must never be sendable.
+    contractAddress: '0x000000000000000000000000000000000000e2e0',
   };
   const lookup = jest.fn();
   let app: INestApplication<App>;
