@@ -93,7 +93,20 @@ export class AnchoringService
   }
 
   onApplicationBootstrap(): void {
-    if (!this.enabled) return;
+    if (!this.enabled || this.target === null) return;
+    // Said out loud before anything is sent: with a key, this process sends
+    // a transaction for every open anchor of this contract in its database.
+    const { contractAddress } = this.target;
+    void this.anchors.countOpen(this.target).then(
+      (openAnchors) =>
+        this.logger.warn({
+          message:
+            'Anchoring is ON: open anchors of this contract will be sent',
+          contractAddress,
+          openAnchors,
+        }),
+      () => undefined,
+    );
     // Picks up whatever a previous run left PENDING or SUBMITTED.
     this.wake();
     this.timer = setInterval(() => this.wake(), this.timing.sweepIntervalMs);

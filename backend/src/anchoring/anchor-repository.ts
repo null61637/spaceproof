@@ -85,6 +85,17 @@ export class AnchorRepository {
     return rows.map((row) => AnchorRepository.toJob(row));
   }
 
+  /** How many anchors of this contract are waiting to be sent or settled. */
+  countOpen(target: AnchorTarget): Promise<number> {
+    return this.prisma.anchor.count({
+      where: {
+        chainId: target.chainId,
+        contractAddress: target.contractAddress,
+        status: { in: [AnchorStatus.SUBMITTED, AnchorStatus.PENDING] },
+      },
+    });
+  }
+
   /**
    * PENDING -> SUBMITTED: records the hash of a signed transaction, before it
    * is broadcast. Counts one attempt.
