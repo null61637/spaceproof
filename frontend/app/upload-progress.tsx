@@ -9,11 +9,11 @@ export function UploadProgress({ fraction }: { fraction: number }) {
         value={fraction}
         max={1}
         aria-label="Progreso de la subida"
-        className="h-2 w-full overflow-hidden rounded-full [&::-moz-progress-bar]:bg-zinc-900 [&::-webkit-progress-bar]:bg-zinc-200 [&::-webkit-progress-value]:bg-zinc-900 dark:[&::-moz-progress-bar]:bg-zinc-100 dark:[&::-webkit-progress-bar]:bg-zinc-800 dark:[&::-webkit-progress-value]:bg-zinc-100"
+        className="h-1.5 w-full overflow-hidden rounded-full [&::-moz-progress-bar]:bg-accent [&::-webkit-progress-bar]:bg-panel-raised [&::-webkit-progress-value]:bg-accent"
       />
-      <p className="text-xs text-zinc-500 dark:text-zinc-400">
+      <p className="hint">
         {sent
-          ? "Archivo enviado. Esperando la respuesta del servidor…"
+          ? "Archivo enviado. Calculando la huella en el servidor…"
           : `Subiendo… ${percent} %`}
       </p>
     </div>
