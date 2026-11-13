@@ -8,10 +8,14 @@ import request from 'supertest';
 import { App } from 'supertest/types';
 import { AppModule } from '../src/app.module';
 import { setupApp } from '../src/app.setup';
-import { AnchorReader } from '../src/certificates/anchor-reader';
+import {
+  ANCHOR_TARGET,
+  AnchorReader,
+  AnchorTarget,
+} from '../src/certificates/anchor-reader';
 import { computeManifestV2Hash } from '../src/certificates/certificate-hash';
 import { MAX_FILE_BYTES } from '../src/certificates/file-upload';
-import { connectAs } from './db';
+import { connectAs, pgError } from './db';
 import {
   CertificateBody,
   TIFF_SIGNATURE,
@@ -852,5 +856,264 @@ describe('Certificates with a chain reader (e2e)', () => {
       anchoredAt: null,
     });
     expect(lookup).not.toHaveBeenCalled();
+  });
+});
+
+// Issuing when a contract is configured (F6.3): the certificate and its
+// PENDING anchoring record are created together or not at all. The target and
+// the reader are fakes: nothing here talks to a chain or sends a transaction.
+describe('Issuing with anchoring configured (e2e)', () => {
+  const target: AnchorTarget = {
+    chainId: 43113,
+    contractAddress: '0xb5cA7811682676e0B7a8fc568B28dbf6f841c8CF',
+  };
+  const lookup = jest.fn();
+  let app: INestApplication<App>;
+  let db: Client;
+  let owner: Client;
+
+  async function appWith(anchorTarget: AnchorTarget | null) {
+    const moduleRef = await Test.createTestingModule({ imports: [AppModule] })
+      .overrideProvider(AnchorReader)
+      .useValue({ lookup })
+      .overrideProvider(ANCHOR_TARGET)
+      .useValue(anchorTarget)
+      .compile();
+    const instance: INestApplication<App> = moduleRef.createNestApplication();
+    instance.useLogger(false);
+    setupApp(instance);
+    await instance.init();
+    return instance;
+  }
+
+  beforeAll(async () => {
+    app = await appWith(target);
+    db = await connectAs('DATABASE_URL');
+    owner = await connectAs('MIGRATION_DATABASE_URL');
+  });
+
+  beforeEach(() => {
+    lookup.mockReset();
+  });
+
+  afterAll(async () => {
+    await db.end();
+    await owner.end();
+    await app.close();
+  });
+
+  async function anchorsOf(certificateId: string) {
+    const { rows } = await db.query<Record<string, unknown>>(
+      'SELECT * FROM "Anchor" WHERE "certificateId" = $1',
+      [certificateId],
+    );
+    return rows;
+  }
+
+  async function counts() {
+    const { rows } = await db.query<{ certificates: string; anchors: string }>(
+      `SELECT (SELECT count(*) FROM "Certificate") AS certificates,
+              (SELECT count(*) FROM "Anchor") AS anchors`,
+    );
+    return {
+      certificates: Number(rows[0].certificates),
+      anchors: Number(rows[0].anchors),
+    };
+  }
+
+  it('creates the certificate and exactly one PENDING anchor for it', async () => {
+    const before = await counts();
+    const file = tiff(50_000);
+    const created = (await issue(app, file).expect(201))
+      .body as CertificateBody;
+
+    expect(await counts()).toEqual({
+      certificates: before.certificates + 1,
+      anchors: before.anchors + 1,
+    });
+    const anchors = await anchorsOf(created.id);
+    expect(anchors).toHaveLength(1);
+    expect(anchors[0]).toMatchObject({
+      certificateId: created.id,
+      chainId: 43113,
+      contractAddress: target.contractAddress,
+      // Nothing was sent: no transaction, block or date is recorded.
+      status: 'PENDING',
+      txHash: null,
+      blockNumber: null,
+      anchoredAt: null,
+      attempts: 0,
+      lastError: null,
+    });
+    expect(anchors[0].id).toMatch(/^[0-9a-f-]{36}$/);
+    expect(lookup).not.toHaveBeenCalled();
+  });
+
+  it('issues the same certificate as without anchoring: same response, same hash', async () => {
+    const file = tiff(2048, 9);
+    const created = (await issue(app, file).expect(201))
+      .body as CertificateBody;
+    expect(Object.keys(created).sort()).toEqual(
+      [
+        'acquiredAt',
+        'contentHash',
+        'createdAt',
+        'fileName',
+        'fileSha256',
+        'fileSizeBytes',
+        'hashVersion',
+        'id',
+        'recipient',
+        'satellite',
+        'sceneId',
+        'sensor',
+        'title',
+        'txHash',
+      ].sort(),
+    );
+    expect(created).toMatchObject({ hashVersion: 2, txHash: null });
+    expect(created.fileSha256).toBe(sha256(file));
+    const manifest = await request(app.getHttpServer())
+      .get(`/api/certificates/${created.id}/manifest`)
+      .expect(200);
+    expect(sha256(manifest.text)).toBe(created.contentHash);
+    // The anchoring record is not part of what is certified.
+    expect(manifest.text).not.toContain('43113');
+    expect(manifest.text).not.toContain(target.contractAddress);
+  });
+
+  it('gives every certificate its own anchor, also when issued at the same time', async () => {
+    const responses = await Promise.all(
+      [1, 2, 3, 4, 5].map((fill) => issue(app, tiff(1024, fill)).expect(201)),
+    );
+    const ids = responses.map((res) => (res.body as CertificateBody).id);
+    expect(new Set(ids).size).toBe(5);
+    for (const id of ids) {
+      const anchors = await anchorsOf(id);
+      expect(anchors).toHaveLength(1);
+      expect(anchors[0]).toMatchObject({
+        certificateId: id,
+        status: 'PENDING',
+      });
+    }
+  });
+
+  it('cannot give a certificate a second anchor', async () => {
+    const created = (await issue(app).expect(201)).body as CertificateBody;
+    const error = await pgError(
+      db.query(
+        `INSERT INTO "Anchor" (id, "certificateId", "chainId", "contractAddress", "updatedAt")
+         VALUES ($1, $2, 43113, $3, now())`,
+        [randomUUID(), created.id, target.contractAddress],
+      ),
+    );
+    expect(error.code).toBe('23505');
+    expect(await anchorsOf(created.id)).toHaveLength(1);
+  });
+
+  it('stores neither row when the anchor cannot be created', async () => {
+    // A target the database refuses (CHECK: Fuji only): the anchor INSERT
+    // fails after the certificate INSERT, inside the same transaction.
+    const broken = await appWith({ ...target, chainId: 43114 });
+    try {
+      const before = await counts();
+      await issue(broken, tiff(4096, 3)).expect(500);
+      expect(await counts()).toEqual(before);
+      const { rowCount } = await db.query(
+        'SELECT 1 FROM "Certificate" WHERE "fileSha256" = $1',
+        [sha256(tiff(4096, 3))],
+      );
+      expect(rowCount).toBe(0);
+    } finally {
+      await broken.close();
+    }
+  });
+
+  it('stores neither row when the certificate cannot be created', async () => {
+    // A temporary trigger, as the owner, that refuses one specific title.
+    const title = `rollback-${randomUUID()}`;
+    await owner.query(
+      `CREATE FUNCTION e2e_refuse_certificate() RETURNS trigger
+       LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'refused by the test'; END; $$`,
+    );
+    try {
+      await owner.query(
+        `CREATE TRIGGER "e2e_refuse_certificate" BEFORE INSERT ON "Certificate"
+         FOR EACH ROW WHEN (NEW.title = '${title}')
+         EXECUTE FUNCTION e2e_refuse_certificate()`,
+      );
+      const before = await counts();
+      await issue(app, tiff(), { ...metadata, title }).expect(500);
+      expect(await counts()).toEqual(before);
+      // The same file under another title still goes through, with its anchor.
+      const created = (await issue(app).expect(201)).body as CertificateBody;
+      expect(await anchorsOf(created.id)).toHaveLength(1);
+    } finally {
+      await owner.query(
+        'DROP TRIGGER IF EXISTS "e2e_refuse_certificate" ON "Certificate"',
+      );
+      await owner.query('DROP FUNCTION e2e_refuse_certificate()');
+    }
+  });
+
+  it('stores neither row for an upload that is rejected', async () => {
+    const before = await counts();
+    await issue(app, tiff(), { ...metadata, satellite: undefined }).expect(400);
+    await issue(app, Buffer.from('not a tiff at all')).expect(415);
+    expect(await counts()).toEqual(before);
+  });
+
+  it('creates no anchor when anchoring is not configured, as before', async () => {
+    const disabled = await appWith(null);
+    try {
+      const before = await counts();
+      const created = (await issue(disabled).expect(201))
+        .body as CertificateBody;
+      expect(await anchorsOf(created.id)).toEqual([]);
+      expect(await counts()).toEqual({
+        certificates: before.certificates + 1,
+        anchors: before.anchors,
+      });
+    } finally {
+      await disabled.close();
+    }
+  });
+
+  it('keeps verification on the live chain: a PENDING record confirms nothing', async () => {
+    const file = tiff(8192, 5);
+    const created = (await issue(app, file).expect(201))
+      .body as CertificateBody;
+    const verified = async () =>
+      (await verifyFile(app, created.id, file).expect(200))
+        .body as VerificationBody;
+
+    lookup.mockResolvedValue({ state: 'NOT_ANCHORED' });
+    expect(await verified()).toMatchObject({
+      status: 'PENDING',
+      reason: 'NOT_ANCHORED',
+      anchoredAt: null,
+    });
+
+    lookup.mockRejectedValue(new Error('RPC request failed'));
+    expect(await verified()).toMatchObject({
+      status: 'UNVERIFIABLE',
+      reason: 'ANCHOR_UNAVAILABLE',
+    });
+
+    // Only the chain makes it VALID, and reading it does not touch the record.
+    lookup.mockResolvedValue({
+      state: 'ANCHORED',
+      anchoredAt: new Date('2026-11-13T10:00:00.000Z'),
+    });
+    expect(await verified()).toMatchObject({
+      status: 'VALID',
+      anchoredAt: '2026-11-13T10:00:00.000Z',
+    });
+    expect(lookup).toHaveBeenCalledWith(created.contentHash);
+    expect((await anchorsOf(created.id))[0]).toMatchObject({
+      status: 'PENDING',
+      txHash: null,
+      anchoredAt: null,
+    });
   });
 });

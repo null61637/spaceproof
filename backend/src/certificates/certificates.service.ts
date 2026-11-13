@@ -1,13 +1,15 @@
 import { randomUUID } from 'node:crypto';
 import {
   ConflictException,
+  Inject,
   Injectable,
   Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { Certificate } from '../generated/prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
-import { AnchorReader } from './anchor-reader';
+import { ANCHOR_TARGET, AnchorReader } from './anchor-reader';
+import type { AnchorTarget } from './anchor-reader';
 import {
   canonicalizeForVersion,
   computeHashForVersion,
@@ -74,12 +76,17 @@ export class CertificatesService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly anchorReader: AnchorReader,
+    @Inject(ANCHOR_TARGET) private readonly anchorTarget: AnchorTarget | null,
   ) {}
 
   /**
    * Issues the certificate of a file that was received completely: `file` is
-   * the digest of the whole body. A single INSERT, so an upload that fails or
-   * is interrupted leaves nothing behind.
+   * the digest of the whole body. A single write at the end, so an upload
+   * that fails or is interrupted leaves nothing behind.
+   *
+   * When a contract is configured, the certificate is created together with
+   * its anchoring record (PENDING: nothing has been sent to the chain), in
+   * one database transaction: both rows exist, or neither does.
    */
   async issue(
     dto: IssueCertificateDto,
@@ -106,6 +113,18 @@ export class CertificatesService {
           hashVersion: 2,
           fileName: dto.fileName,
           contentHash: computeManifestV2Hash(record),
+          // A nested write: Prisma runs both INSERTs in one transaction. The
+          // database defaults make the row PENDING and empty.
+          ...(this.anchorTarget === null
+            ? {}
+            : {
+                anchor: {
+                  create: {
+                    chainId: this.anchorTarget.chainId,
+                    contractAddress: this.anchorTarget.contractAddress,
+                  },
+                },
+              }),
         },
       }),
     );

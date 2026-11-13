@@ -1,6 +1,6 @@
 # SpaceProof — Estado y pendientes
 
-Última actualización: 2026-11-13, con **F5 desplegada, verificada y validada en Avalanche Fuji** (secciones 9 y 10). Fases F0 a F4 terminadas y fusionadas en `main` (PR #3, CI en verde): se puede emitir el certificado de un archivo y verificarlo, por API y desde la interfaz. El contrato `SpaceProofAnchor` está en Fuji en `0xb5cA7811682676e0B7a8fc568B28dbf6f841c8CF`, con el código fuente verificado y dos anclajes de prueba. **El backend ya lee la cadena en vivo** cuando se configuran `ANCHOR_RPC_URL` y `ANCHOR_CONTRACT_ADDRESS`: un certificado cuyo hash está en el contrato verifica como «válido» (comprobado contra Fuji con un certificado sintético). **El backend todavía no ancla por sí mismo** (F6): hoy un certificado nuevo queda en «pendiente» —o en «no verificable en Avalanche» si las variables no están configuradas— hasta que alguien lo ancle a mano. El trabajo de F5 está en la rama `feat/f5-avalanche-contract`, con commit, pull request #4 y **CI de GitHub en verde; falta fusionarla en `main`**. De F6 están hechas en local, sin commit, la migración `Anchor` (F6.1) y el firmante con su validación de arranque (F6.2); el backend sigue sin enviar anclajes. Detalle en la sección 11.
+Última actualización: 2026-11-13, con **F5 desplegada, verificada y validada en Avalanche Fuji** (secciones 9 y 10). Fases F0 a F4 terminadas y fusionadas en `main` (PR #3, CI en verde): se puede emitir el certificado de un archivo y verificarlo, por API y desde la interfaz. El contrato `SpaceProofAnchor` está en Fuji en `0xb5cA7811682676e0B7a8fc568B28dbf6f841c8CF`, con el código fuente verificado y dos anclajes de prueba. **El backend ya lee la cadena en vivo** cuando se configuran `ANCHOR_RPC_URL` y `ANCHOR_CONTRACT_ADDRESS`: un certificado cuyo hash está en el contrato verifica como «válido» (comprobado contra Fuji con un certificado sintético). **El backend todavía no ancla por sí mismo** (F6): hoy un certificado nuevo queda en «pendiente» —o en «no verificable en Avalanche» si las variables no están configuradas— hasta que alguien lo ancle a mano. El trabajo de F5 está en la rama `feat/f5-avalanche-contract`, fusionada en `main` (PR #4, commit de fusión `db43fef`, CI en verde): **F5 está cerrada.** De F6 están hechas en la rama local `feat/f6-anchoring`, sin push ni CI de GitHub: la migración `Anchor` (F6.1), el firmante con su validación de arranque (F6.2) y la creación del certificado junto con su anclaje `PENDING` (F6.3). **El backend sigue sin enviar anclajes** (F6.4). Detalle en la sección 11.
 
 Este documento es la referencia central: qué está hecho y comprobado, qué se decidió, qué riesgos se conocen, qué falta para terminar el MVP y **qué quedó fuera** (sección 7). Detalle operativo en el [README](../README.md) y en [backups.md](backups.md).
 
@@ -907,7 +907,7 @@ Sin transacciones (nonce del owner: 3), sin despliegues, sin tocar el servidor d
 |---|---|---|
 | A1: `viem` 2.57.16 y `hardhat` 3.21.2 | COMPLETA | Ver 11.1. Incluida en el commit de F5 |
 | A2: pruebas sin variables `ANCHOR_*` heredadas | COMPLETA | Ver 11.1. Incluida en el commit de F5 |
-| Integración de F5 | **PARCIAL** | Commit `943336a` en `feat/f5-avalanche-contract`, push y pull request #4 (https://github.com/null61637/spaceproof/pull/4). Antes del commit se comprobó que no entra ningún `.env` y que la clave no aparece en lo versionado. **CI de GitHub en verde, los 5 jobs**, incluido `contracts` por primera vez en un runner real. **Falta la fusión en `main`**, que queda para el responsable del proyecto |
+| Integración de F5 | **PARCIAL** | Commit `943336a` en `feat/f5-avalanche-contract`, push y pull request #4 (https://github.com/null61637/spaceproof/pull/4). Antes del commit se comprobó que no entra ningún `.env` y que la clave no aparece en lo versionado. **CI de GitHub en verde, los 5 jobs**, incluido `contracts` por primera vez en un runner real. **Después:** fusionado en `main` (`db43fef`) |
 | F6.1: migración `Anchor` | COMPLETA en local, sin commit | Detalle abajo |
 | F6.2: firmante y validación de arranque | COMPLETA en local, sin commit | Detalle abajo |
 | F6.3 a F6.7 | PENDIENTE | No se empezaron |
@@ -959,3 +959,63 @@ Qué sigue: fusionar el PR #4; commit de F6.1 y F6.2 y su CI; después F6.3 y F6
 | Ninguna transacción | El firmante no tiene método de envío. Nonce del owner: 3 |
 
 Pruebas de la auditoría: ESLint y compilación sin errores, 230/230 unitarias, 194/194 e2e.
+
+**Commit de F6.1 y F6.2:** `18d331b` en `feat/f6-anchoring`, local, sin push. Antes del commit se comprobó que no entra ningún `.env` ni la clave. Una corrección posterior a ese commit va junto con F6.3: un tipo demasiado estricto en `anchor-signer.spec.ts`, que solo se ve al comprobar tipos incluyendo las pruebas (la compilación del CI las excluye, y la prueba pasaba).
+
+#### F6.3 — el certificado y su `Anchor(PENDING)` se crean juntos
+
+Estado: **implementada y probada en local.** No se envió ninguna transacción (nonce del owner: 3), no se tocó el contrato y no se implementó F6.4.
+
+Qué hace: al emitir un certificado en un entorno con contrato configurado, se crea en la misma transacción de PostgreSQL su fila `Anchor`, que nace `PENDING` y vacía. Si falla cualquiera de las dos inserciones, no queda ninguna fila. Sin contrato configurado, la emisión es exactamente la de antes: un certificado, ninguna fila `Anchor`.
+
+| Archivo | Cambio |
+|---|---|
+| `src/certificates/certificates.service.ts` | `issue` usa una escritura anidada de Prisma (certificado + anclaje en una transacción). Solo envía `chainId` y `contractAddress`: el estado y lo demás los pone la base |
+| `src/certificates/anchor-reader.ts` | Tipo `AnchorTarget` (cadena y contrato) y su token de inyección |
+| `src/certificates/avalanche-anchor-reader.ts` | `anchorTargetFromEnv`, que comparte la validación de configuración con el lector |
+| `src/certificates/certificates.module.ts` | Proveedor del destino de anclaje |
+| Pruebas | `certificates.service.spec.ts`, `avalanche-anchor-reader.spec.ts`, `test/certificates.e2e-spec.ts`; corrección de tipo en `anchor-signer.spec.ts` |
+
+Sin migraciones nuevas ni cambios en el esquema, el contrato, el frontend o la respuesta de la API: `POST /api/certificates` devuelve lo mismo que antes, y el manifiesto y su hash no incluyen nada del anclaje.
+
+Decisiones técnicas:
+
+| Decisión | Motivo |
+|---|---|
+| «Requiere anclaje» = hay contrato configurado (`ANCHOR_RPC_URL` y `ANCHOR_CONTRACT_ADDRESS`), **con o sin clave** | Son las mismas variables con las que la verificación consulta ese contrato; la fila registra en qué contrato debe anclarse. Con contrato y sin clave, la fila espera en `PENDING` hasta que haya firmante (F6.4/F6.5) o se ancle a mano. **Requiere confirmación** (alternativa: crearla solo si además hay clave) |
+| Escritura anidada de Prisma, no una transacción interactiva | Una sola llamada: no hay forma de crear una fila sin la otra, y no cambia el manejo de errores existente |
+| La aplicación no escribe `status`, `txHash`, `attempts` ni fechas | Los valores iniciales los fija la base, y el trigger de F6.1 rechaza cualquier otra cosa: un anclaje no puede nacer confirmado |
+| La dirección se guarda con su forma de checksum | Una sola representación por contrato |
+| La verificación no se tocó | Sigue leyendo la cadena en vivo; la fila `Anchor` no confirma nada (F6.6 la usará para distinguir `PENDING` de `INVALID`) |
+
+Pruebas:
+
+| Prueba | Resultado |
+|---|---|
+| Unitarias (`pnpm test`) | **237/237** (230 + 7): una sola escritura con las dos filas; solo `chainId` y `contractAddress`; mismo certificado y mismo hash que sin contrato; sin contrato no hay anclaje; el destino existe exactamente cuando hay lector |
+| e2e (`pnpm test:e2e`, `spaceproof_test`) | **203/203** (194 + 9): certificado + un único `Anchor` `PENDING`; misma respuesta y mismo hash; cinco emisiones simultáneas → un anclaje cada una; segundo anclaje del mismo certificado rechazado (único); **falla el anclaje → no queda el certificado**; **falla el certificado → no queda ninguna fila**; cargas rechazadas no dejan filas; anclaje deshabilitado → sin fila, como antes; la verificación sigue dependiendo solo de la cadena y la fila queda `PENDING` aunque la cadena responda «anclado» |
+| ESLint; tipos con y sin pruebas; compilación en directorio aparte | Sin errores |
+| `prisma migrate diff` contra la base de pruebas y contra las migraciones | Sin diferencias |
+| `verify:certificates` | Desarrollo (solo lectura): 0 certificados, código 0. `spaceproof_test`: 91 válidos de 96; los 5 inválidos son los registros alterados a propósito por los e2e (11.2) |
+| En vivo, instancia aparte en :3101 contra `spaceproof_test`, leyendo Fuji, **sin clave** | Emisión real por HTTP de un archivo sintético → `201`; fila `Anchor` `PENDING`, cadena 43113, contrato correcto, sin `txHash`, 0 intentos; `GET /verify` → `PENDING` / `NOT_ANCHORED` (la cadena no tiene ese hash) |
+| Contrato | Sin cambios; sus pruebas no se repitieron |
+
+Cómo se provocaron los fallos en los e2e: para el anclaje, un destino con otro chain ID, que el `CHECK` de la base rechaza después de insertado el certificado; para el certificado, un trigger temporal creado por el owner en `spaceproof_test` y eliminado al terminar (comprobado: no queda). No aplica el aislamiento entre inquilinos: el modelo de SpaceProof no tiene inquilinos ni cuentas.
+
+Riesgos y limitaciones:
+
+- **La base de desarrollo `spaceproof` no tiene la migración `Anchor`** (sigue con 6 migraciones; no se aplicó por no estar autorizado). Con este código, un backend que apunte a esa base y tenga las variables `ANCHOR_*` configuradas falla al emitir. Sin esas variables funciona como antes. Antes de usar el anclaje en desarrollo hay que ejecutar `prisma migrate deploy` allí.
+- Hasta F6.4 nadie envía los anclajes: las filas quedan en `PENDING` y la verificación responde `PENDING`.
+- Los certificados emitidos sin contrato configurado no tienen fila `Anchor` (decisión de 11.4: no se anclan automáticamente).
+- F6.1 a F6.3 no pasaron por el CI de GitHub: la rama no se subió.
+
+Pendiente para F6.4 (no implementado; requisitos):
+
+1. Método de envío en el firmante, que llame siempre a `assertReady()` antes de firmar.
+2. Servicio que tome las filas `PENDING` del contrato configurado, de a una (nonces en serie).
+3. Antes de enviar, leer `anchoredAt(hash)`: si ya está, `CONFIRMED` con la fecha del contrato y sin `txHash`.
+4. Enviar y guardar `SUBMITTED` con el `txHash` de inmediato; esperar el recibo reconsultando.
+5. Recibo exitoso + 1 confirmación → `CONFIRMED` con `txHash`, bloque y fecha del contrato; `AlreadyAnchored` → éxito.
+6. Revert o tiempo agotado → releer la cadena, sumar un intento; al quinto, `FAILED` con el nombre del error.
+7. Dispararlo después de responder la emisión, sin bloquearla; el barrido tras reinicios es F6.5.
+8. Pruebas unitarias con cadena falsa; ninguna prueba automática envía transacciones. La prueba manual contra Fuji consume AVAX de prueba y nonce: necesita autorización expresa.

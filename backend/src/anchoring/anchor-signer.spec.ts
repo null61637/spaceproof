@@ -167,7 +167,13 @@ describe('AnchorSigner', () => {
       inputs?: { type: string }[];
       outputs?: { type: string }[];
     }[];
-    const shape = (item: (typeof versioned)[number]) => ({
+    const shape = (item: {
+      type: string;
+      name?: string;
+      stateMutability?: string;
+      inputs?: readonly { type: string }[];
+      outputs?: readonly { type: string }[];
+    }) => ({
       type: item.type,
       name: item.name,
       stateMutability: item.stateMutability,

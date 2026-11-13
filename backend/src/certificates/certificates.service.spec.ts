@@ -1,7 +1,12 @@
 import { ConflictException, Logger, NotFoundException } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { PrismaService } from '../prisma/prisma.service';
-import { AnchorLookup, AnchorReader } from './anchor-reader';
+import {
+  ANCHOR_TARGET,
+  AnchorLookup,
+  AnchorReader,
+  AnchorTarget,
+} from './anchor-reader';
 import {
   canonicalizeManifestV2,
   computeCertificateHash,
@@ -74,15 +79,23 @@ describe('CertificatesService', () => {
   beforeEach(async () => {
     jest.resetAllMocks();
     lookup.mockResolvedValue({ state: 'NOT_CONFIGURED' });
+    service = await serviceWith(null);
+  });
+
+  /** The service as wired for an environment with or without a contract. */
+  async function serviceWith(
+    target: AnchorTarget | null,
+  ): Promise<CertificatesService> {
     const moduleRef = await Test.createTestingModule({
       providers: [
         CertificatesService,
         { provide: PrismaService, useValue: { certificate } },
         { provide: AnchorReader, useValue: { lookup } },
+        { provide: ANCHOR_TARGET, useValue: target },
       ],
     }).compile();
-    service = moduleRef.get(CertificatesService);
-  });
+    return moduleRef.get(CertificatesService);
+  }
 
   afterEach(() => {
     jest.restoreAllMocks();
@@ -160,6 +173,66 @@ describe('CertificatesService', () => {
         'connection lost',
       );
       expect(certificate.create).toHaveBeenCalledTimes(1);
+    });
+
+    it('creates no anchoring record when no contract is configured', async () => {
+      expect(await issued()).not.toHaveProperty('anchor');
+    });
+
+    describe('with a contract configured', () => {
+      const target: AnchorTarget = {
+        chainId: 43113,
+        contractAddress: '0xb5cA7811682676e0B7a8fc568B28dbf6f841c8CF',
+      };
+
+      beforeEach(async () => {
+        service = await serviceWith(target);
+      });
+
+      it('creates the certificate and its anchoring record in one nested write', async () => {
+        const data = await issued();
+        // One call to the database: the two rows cannot be split.
+        expect(certificate.create).toHaveBeenCalledTimes(1);
+        expect(data).toMatchObject({
+          hashVersion: 2,
+          anchor: { create: target },
+        });
+      });
+
+      it('leaves status, transaction and dates to the database: nothing is confirmed', async () => {
+        const data = (await issued()) as unknown as {
+          anchor: { create: Record<string, unknown> };
+        };
+        expect(Object.keys(data.anchor.create).sort()).toEqual([
+          'chainId',
+          'contractAddress',
+        ]);
+      });
+
+      it('issues the same certificate as without a contract', async () => {
+        const data = (await issued()) as Data & { anchor?: unknown };
+        const { anchor, ...withoutAnchor } = data;
+        expect(anchor).toBeDefined();
+        expect(withoutAnchor.contentHash).toBe(
+          computeManifestV2Hash(withoutAnchor),
+        );
+        expect(canonicalizeManifestV2(withoutAnchor)).not.toContain('43113');
+      });
+
+      it('does not ask the chain, and returns the certificate without the record', async () => {
+        certificate.create.mockResolvedValue(v2);
+        const created = await service.issue(metadata, original);
+        expect(created).not.toHaveProperty('anchor');
+        expect(lookup).not.toHaveBeenCalled();
+      });
+
+      it('reports no certificate when the write fails, whichever row failed', async () => {
+        certificate.create.mockRejectedValue(new Error('check violation'));
+        await expect(service.issue(metadata, original)).rejects.toThrow(
+          'check violation',
+        );
+        expect(certificate.create).toHaveBeenCalledTimes(1);
+      });
     });
   });
 
