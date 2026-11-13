@@ -1,6 +1,6 @@
 # SpaceProof — Estado y pendientes
 
-Última actualización: 2026-11-13, con **F5 desplegada, verificada y validada en Avalanche Fuji** (secciones 9 y 10). Fases F0 a F4 terminadas y fusionadas en `main` (PR #3, CI en verde): se puede emitir el certificado de un archivo y verificarlo, por API y desde la interfaz. El contrato `SpaceProofAnchor` está en Fuji en `0xb5cA7811682676e0B7a8fc568B28dbf6f841c8CF`, con el código fuente verificado y dos anclajes de prueba. **El backend ya lee la cadena en vivo** cuando se configuran `ANCHOR_RPC_URL` y `ANCHOR_CONTRACT_ADDRESS`: un certificado cuyo hash está en el contrato verifica como «válido» (comprobado contra Fuji con un certificado sintético). **El backend todavía no ancla por sí mismo** (F6): hoy un certificado nuevo queda en «pendiente» —o en «no verificable en Avalanche» si las variables no están configuradas— hasta que alguien lo ancle a mano. El trabajo de F5 está en la rama `feat/f5-avalanche-contract`, fusionada en `main` (PR #4, commit de fusión `db43fef`, CI en verde): **F5 está cerrada.** F6.1 a F6.3 (tabla `Anchor`, firmante, certificado y anclaje `PENDING` en una transacción) están fusionadas en `main` (PR #5, `e4553b5`). F6.4 a F6.6 (envío y confirmación, recuperación tras reinicios y verificación integral) también están en `main` (PR #6, `a705060`), **probadas solo contra una cadena simulada: todavía no se envió ningún anclaje real desde el backend**, y la prueba en Fuji requiere autorización expresa. La interfaz (F7) muestra el estado del anclaje y todos los resultados de la verificación; hay README, guion de demo y archivos de ejemplo reproducibles (F9). Detalle en las secciones 11.10 y 11.11. El [README](../README.md) operativo anterior ahora es [OPERACION.md](OPERACION.md).
+Última actualización: 2026-11-13, con **F5 desplegada, verificada y validada en Avalanche Fuji** (secciones 9 y 10). Fases F0 a F4 terminadas y fusionadas en `main` (PR #3, CI en verde): se puede emitir el certificado de un archivo y verificarlo, por API y desde la interfaz. El contrato `SpaceProofAnchor` está en Fuji en `0xb5cA7811682676e0B7a8fc568B28dbf6f841c8CF`, con el código fuente verificado y dos anclajes de prueba. **El backend ya lee la cadena en vivo** cuando se configuran `ANCHOR_RPC_URL` y `ANCHOR_CONTRACT_ADDRESS`: un certificado cuyo hash está en el contrato verifica como «válido» (comprobado contra Fuji con un certificado sintético). **El backend todavía no ancla por sí mismo** (F6): hoy un certificado nuevo queda en «pendiente» —o en «no verificable en Avalanche» si las variables no están configuradas— hasta que alguien lo ancle a mano. El trabajo de F5 está en la rama `feat/f5-avalanche-contract`, fusionada en `main` (PR #4, commit de fusión `db43fef`, CI en verde): **F5 está cerrada.** F6.1 a F6.3 (tabla `Anchor`, firmante, certificado y anclaje `PENDING` en una transacción) están fusionadas en `main` (PR #5, `e4553b5`). F6.4 a F6.6 (envío y confirmación, recuperación tras reinicios y verificación integral) también están en `main` (PR #6, `a705060`), **probadas solo contra una cadena simulada: todavía no se envió ningún anclaje real desde el backend**, y la prueba en Fuji requiere autorización expresa. La interfaz (F7) muestra el estado del anclaje y todos los resultados de la verificación; hay README, guion de demo y archivos de ejemplo reproducibles (F9), todo fusionado en `main` (PR #7, `769cf25`). **Lo único que falta para la demo completa es la prueba real en Fuji**, cuyo procedimiento exacto está en la sección 11.12 y requiere autorización. Detalle en las secciones 11.10 a 11.12. El [README](../README.md) operativo anterior ahora es [OPERACION.md](OPERACION.md).
 
 Este documento es la referencia central: qué está hecho y comprobado, qué se decidió, qué riesgos se conocen, qué falta para terminar el MVP y **qué quedó fuera** (sección 7). Detalle operativo en el [README](../README.md) y en [backups.md](backups.md).
 
@@ -1272,3 +1272,74 @@ No se encontraron vulnerabilidades ni errores que exigieran un cambio de código
 | 5 | Despliegue público (P1) | Solo si la entrega exige una URL |
 
 Ramas: `feat/f6-anchoring-send` sigue existiendo, vacía (apunta a `e4553b5`, ya contenido en `main`): es innecesaria y se puede borrar cuando se autorice. El stash de respaldo de F6.1/F6.2 se conserva; su contenido ya está en `main`.
+
+### 11.12 Cierre para la entrega: PR #7, base `spaceproof` y procedimiento de la prueba real en Fuji — 2026-11-13
+
+**PR #7 (F7 a F9): RESUELTO.** Sin conflictos y con los 5 jobs en verde sobre `a791515`; fusionado en `main`, commit de fusión `769cf25`. `main` local actualizado; árbol de trabajo limpio. Stash y ramas conservados (incluida `feat/f6-anchoring-send`, vacía e innecesaria). Sin transacciones: nonce del owner 3.
+
+#### Migración pendiente en la base `spaceproof` (informe; NO ejecutada)
+
+Estado leído de la base, sin modificar nada:
+
+| Dato | Valor |
+|---|---|
+| Migraciones aplicadas | 6 de 7, todas completas, ninguna fallida ni revertida |
+| Pendiente | `20261113150000_anchor` (única) |
+| Tablas | `Certificate`, `_prisma_migrations` |
+| Certificados | 0 |
+| Roles | `spaceproof` (administrador), `spaceproof_owner`, `spaceproof_app`: los tres que la migración necesita |
+| Variables `ANCHOR_*` en `backend/.env` | Ninguna |
+
+Qué hace la migración: crea el tipo `AnchorStatus` y la tabla `Anchor` con sus restricciones, tres triggers y los permisos de `spaceproof_app`. **Es solo aditiva**: no modifica `Certificate` ni ningún dato (y no hay datos). Es la misma que se aplica desde cero en cada ejecución de los e2e y en el CI.
+
+Riesgo: bajo. El servidor de :3001 usa esta base con código anterior al anclaje, que no conoce la tabla nueva: no lo afecta. Para deshacerla haría falta eliminar la tabla, el tipo y las dos funciones como `spaceproof_owner`; no hay nada que respaldar, pero el procedimiento incluye un `pg_dump` previo.
+
+Comando (en `backend/`, como `spaceproof_owner`, por `MIGRATION_DATABASE_URL`): `pnpm exec prisma migrate deploy`. No usar `migrate dev` ni `migrate reset`.
+
+#### Procedimiento de la única prueba real en Fuji (NO ejecutado; requiere autorización)
+
+Una sola transacción: el anclaje de un certificado del archivo de demo. Costo esperado ~45 700 gas; el nonce pasa de 3 a 4. Todo en una instancia aparte, en el puerto 3101: el servidor de :3001 no se toca.
+
+**0. Comprobaciones previas (solo lectura). Si alguna falla, no se sigue.**
+
+- Nonce del owner `0x1bBB…D78a` = 3, en `latest` y en `pending`; saldo ~0,4999 AVAX de prueba.
+- `npm run check:fuji` en `contracts/`: «OK: the record matches the chain».
+- `main` en `769cf25` o posterior, árbol limpio.
+
+**1. Base.** `pg_dump -Fc` de `spaceproof` (ver [backups.md](backups.md)) y `pnpm exec prisma migrate deploy` en `backend/`. Después: `prisma migrate status` al día, y `SELECT count(*) FROM "Anchor"` = 0.
+
+**2. Archivo.** `node scripts/demo-files.mjs`. El SHA-256 de `demo/escena-demo.tif` debe ser `48d4642b97c94355802c06e66db927a602abe222a3d6f457ecbda5dd2bc57bdb`.
+
+**3. Instancia.** Compilar el backend en un directorio aparte y arrancarlo con `PORT=3101`, el `DATABASE_URL` de `backend/.env` (base `spaceproof`, rol `spaceproof_app`), `ANCHOR_RPC_URL=https://api.avax-test.network/ext/bc/C/rpc`, `ANCHOR_CONTRACT_ADDRESS=0xb5cA7811682676e0B7a8fc568B28dbf6f841c8CF` y `ANCHOR_PRIVATE_KEY` tomada de `contracts/.env` directamente al entorno del proceso, sin imprimirla ni copiarla a otro archivo. En el log deben aparecer, en este orden y antes de emitir nada:
+
+- `Anchor signer ready`, con la dirección `0x1bBB…D78a`;
+- `Anchoring is ON…`, con `openAnchors: 0`.
+
+Si `openAnchors` no es 0, o el firmante no queda listo, **detener la instancia de inmediato**.
+
+**4. Certificado.** `POST http://127.0.0.1:3101/api/certificates` con el archivo y estos metadatos: título «Escena demo — delta del Paraná», destinatario «Jurado de la hackathon», satélite «Sentinel-2A», sensor «MSI», adquisición `2026-11-01T14:00:51.000Z`, nombre `escena-demo.tif`. Esperado: `201`. Anotar `id`, `fileSha256` (debe ser el del paso 2) y `contentHash`.
+
+**5. Transacción y confirmación.** Consultar `GET …/verify` cada pocos segundos. Esperado, en menos de un minuto: `anchor.status` `PENDING` → `SUBMITTED` (con `txHash`) → `CONFIRMED`, y `status: VALID`. Anotar el `txHash`.
+
+**6. Comprobación independiente, por RPC directo y sin el backend:**
+
+- recibo de la transacción: `status` 0x1, `to` = el contrato, un único evento `Anchored` cuyo hash es el `contentHash`;
+- `anchoredAt(0x<contentHash>)` = la marca de tiempo de ese bloque = `anchoredAt` de la respuesta;
+- nonce del owner = **4**, en `latest` y `pending` (exactamente una transacción);
+- `HASH=0x<contentHash> npm run check:fuji`: «anchored at …»;
+- la transacción, visible en `https://testnet.snowtrace.io/tx/<txHash>`.
+
+**7. Verificación.**
+
+- `GET …/manifest`: su SHA-256 es el `contentHash`.
+- `POST …/verify-file` con `escena-demo.tif` → `VALID`, las tres comprobaciones en orden, `anchor.status: CONFIRMED`.
+- `POST …/verify-file` con `escena-demo-alterada.tif` → `INVALID` / `FILE_MISMATCH`.
+- La página `http://localhost:3000/certificates/<id>` no sirve para esto mientras el frontend apunte al backend de :3001: para verla, arrancar el frontend en otro puerto con `BACKEND_URL=http://127.0.0.1:3101` y capturar los paneles `CONFIRMED`, VÁLIDO e INVÁLIDO.
+
+**8. Cierre.** Detener la instancia de :3101. Medio minuto después: nonce todavía 4; ninguna fila `Anchor` en `PENDING` o `SUBMITTED`. Registrar aquí: id del certificado, `contentHash`, `txHash`, bloque, gas, nonce antes y después.
+
+**Criterios para abortar** (detener la instancia y no reintentar sin revisar): nonce previo distinto de 3; `openAnchors` distinto de 0; el firmante no queda listo; la fila pasa a `FAILED`; el nonce sube más de una unidad; un estado que no cambia en dos minutos (en ese caso la fila queda como esté: no se reenvía a mano).
+
+Fuera de esta prueba, a propósito: matar el backend a mitad del anclaje para ver la recuperación con transacciones reales (sería una segunda transacción). Esa parte queda probada solo con la cadena simulada.
+
+**Único paso que requiere autorización:** ejecutar este procedimiento (incluye la migración aditiva en `spaceproof` y una transacción de prueba en Fuji).
