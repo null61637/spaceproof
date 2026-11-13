@@ -1,6 +1,6 @@
 # SpaceProof — Estado y pendientes
 
-Última actualización: 2026-11-13, con **F5 desplegada, verificada y validada en Avalanche Fuji** (secciones 9 y 10). Fases F0 a F4 terminadas y fusionadas en `main` (PR #3, CI en verde): se puede emitir el certificado de un archivo y verificarlo, por API y desde la interfaz. El contrato `SpaceProofAnchor` está en Fuji en `0xb5cA7811682676e0B7a8fc568B28dbf6f841c8CF`, con el código fuente verificado y dos anclajes de prueba. **El backend ya lee la cadena en vivo** cuando se configuran `ANCHOR_RPC_URL` y `ANCHOR_CONTRACT_ADDRESS`: un certificado cuyo hash está en el contrato verifica como «válido» (comprobado contra Fuji con un certificado sintético). **El backend todavía no ancla por sí mismo** (F6): hoy un certificado nuevo queda en «pendiente» —o en «no verificable en Avalanche» si las variables no están configuradas— hasta que alguien lo ancle a mano. El trabajo de F5 está en la rama `feat/f5-avalanche-contract`, fusionada en `main` (PR #4, commit de fusión `db43fef`, CI en verde): **F5 está cerrada.** De F6 están hechas en la rama `feat/f6-anchoring`, publicadas en el pull request #5 y todavía sin fusionar: la migración `Anchor` (F6.1), el firmante con su validación de arranque (F6.2) y la creación del certificado junto con su anclaje `PENDING` (F6.3). **El backend sigue sin enviar anclajes** (F6.4). Detalle en la sección 11.
+Última actualización: 2026-11-13, con **F5 desplegada, verificada y validada en Avalanche Fuji** (secciones 9 y 10). Fases F0 a F4 terminadas y fusionadas en `main` (PR #3, CI en verde): se puede emitir el certificado de un archivo y verificarlo, por API y desde la interfaz. El contrato `SpaceProofAnchor` está en Fuji en `0xb5cA7811682676e0B7a8fc568B28dbf6f841c8CF`, con el código fuente verificado y dos anclajes de prueba. **El backend ya lee la cadena en vivo** cuando se configuran `ANCHOR_RPC_URL` y `ANCHOR_CONTRACT_ADDRESS`: un certificado cuyo hash está en el contrato verifica como «válido» (comprobado contra Fuji con un certificado sintético). **El backend todavía no ancla por sí mismo** (F6): hoy un certificado nuevo queda en «pendiente» —o en «no verificable en Avalanche» si las variables no están configuradas— hasta que alguien lo ancle a mano. El trabajo de F5 está en la rama `feat/f5-avalanche-contract`, fusionada en `main` (PR #4, commit de fusión `db43fef`, CI en verde): **F5 está cerrada.** F6.1 a F6.3 (tabla `Anchor`, firmante, certificado y anclaje `PENDING` en una transacción) están fusionadas en `main` (PR #5, `e4553b5`). F6.4 a F6.6 (envío y confirmación, recuperación tras reinicios y verificación integral) están **implementadas y probadas solo contra una cadena simulada**, en la rama `feat/f6-anchoring`: **todavía no se envió ningún anclaje real desde el backend**, y la prueba en Fuji requiere autorización expresa. Detalle en la sección 11.10.
 
 Este documento es la referencia central: qué está hecho y comprobado, qué se decidió, qué riesgos se conocen, qué falta para terminar el MVP y **qué quedó fuera** (sección 7). Detalle operativo en el [README](../README.md) y en [backups.md](backups.md).
 
@@ -1054,3 +1054,128 @@ Conclusión: **son datos de prueba deliberadamente inconsistentes, no un error d
 **CI del PR #5** (https://github.com/null61637/spaceproof/pull/5), sobre el commit `3f831a1`: los 5 jobs en verde (Backend; Backend E2E; Contracts; Frontend; Docker Compose). Corrige la fila «EN PROGRESO» de 11.8. El workflow no tiene jobs de análisis de seguridad ni de auditoría de dependencias: eso no está validado por el CI.
 
 **Estado:** F6.1 a F6.3 publicadas y validadas, **sin fusionar** (requiere aprobación). F6.4 no se empezó: va después de la fusión, con la rama actualizada sobre ese `main`. Sin transacciones (nonce del owner: 3); base `spaceproof` sin tocar; stash conservado.
+
+### 11.10 Cierre de F6: envío y confirmación (F6.4), recuperación (F6.5) y verificación integral (F6.6) — 2026-11-13
+
+**Integración de F6.1 a F6.3: RESUELTO.** El PR #5 se fusionó en `main` con el commit de fusión `e4553b5` (los 5 jobs en verde sobre `f33c8a2`, contenido idéntico). La rama `feat/f6-anchoring` avanzó a `e4553b5` sin conflictos; árbol limpio; stash de respaldo conservado. Quedó además una rama local vacía, `feat/f6-anchoring-send`, creada por error en `e4553b5` y sin commits propios: no se eliminó (no se borran ramas sin autorización).
+
+**Estado de F6.4, F6.5 y F6.6: implementadas y probadas solo con una cadena simulada.** No se envió ninguna transacción real (nonce del owner: 3), no se usó la clave real, no se tocó el contrato ni la base `spaceproof`. **Falta la prueba real en Fuji**, que requiere autorización expresa; hasta entonces el criterio de aceptación de F6 («un certificado nuevo llega solo a `CONFIRMED` en Fuji») no está cumplido.
+
+#### Diseño
+
+Sin infraestructura nueva: ni colas, ni Redis, ni migraciones. Todo el estado está en la tabla `Anchor` de F6.1.
+
+| Pieza | Archivo | Responsabilidad |
+|---|---|---|
+| Repositorio | `src/anchoring/anchor-repository.ts` | Lee los anclajes abiertos y hace cada transición con **un `UPDATE` condicional** que nombra el estado que espera (estado, transacción, intentos). Devuelve si esta llamada hizo el cambio: en una carrera entre dos procesos, exactamente uno gana. Solo escribe las siete columnas que el rol de ejecución puede actualizar; nunca intenta tocar una fila `CONFIRMED` |
+| Firmante | `src/anchoring/anchor-signer.ts` | `sign(hash)`: comprueba cadena y `owner()`, simula la llamada (si el contrato la rechazaría, no firma), firma y devuelve la transacción **con su hash, sin enviarla**. `broadcast()`: la envía. La transacción lleva solo los 32 bytes del hash del certificado |
+| Lector | `src/certificates/avalanche-anchor-reader.ts` | Además de `anchoredAt(hash)`, `transaction(txHash)`: recibo (éxito o revert, destinatario, bloque, confirmaciones) y los eventos `Anchored` emitidos **por el contrato configurado**. Sin `eth_getLogs` |
+| Servicio | `src/anchoring/anchoring.service.ts` | Envío, confirmación y barrido. Una pasada lee las filas abiertas y continúa cada una desde lo que dice su fila; no guarda nada en memoria entre pasadas |
+| Evidencia | `anchorEvidence()` en `anchor-reader.ts` | Una única definición, usada por el servicio y por la verificación, de cuándo una transacción prueba el anclaje |
+
+El servicio solo actúa si hay clave **y** contrato configurados. Sin clave no hace ninguna consulta (ni a la base ni a la cadena): los anclajes quedan `PENDING`, como estaba decidido.
+
+#### Estados y transiciones
+
+| Transición | Cuándo |
+|---|---|
+| `PENDING` → `SUBMITTED` | Se firmó una transacción y **se guardó su hash antes de enviarla**. Cuenta un intento |
+| `PENDING` → `CONFIRMED` (sin `txHash`) | Antes de firmar se lee la cadena: el hash ya estaba. No se envía nada |
+| `SUBMITTED` → `CONFIRMED` | Toda la evidencia coincide (abajo) |
+| `SUBMITTED` → `PENDING` | La transacción registrada revirtió, o el nodo nunca la conoció pasado el tiempo de espera, y el hash no está en la cadena. Se limpia `txHash` y se anota el motivo |
+| `SUBMITTED` → `CONFIRMED` (sin `txHash`) | La transacción registrada revirtió o se perdió, pero el hash sí está en la cadena (lo ancló otra): esa transacción no se conserva como evidencia |
+| → `FAILED` | Tras 5 intentos; o una transacción exitosa que **no** es este anclaje (otro contrato, otro hash, sin evento): un reintento no lo arregla |
+| `FAILED` → `PENDING` | Solo con `AnchoringService.retry(id)`, deliberado, con los intentos en cero. Nada lo llama automáticamente y **no hay ruta HTTP** (el reintento manual sigue postergado) |
+| `CONFIRMED` → cualquier otro | Imposible: el repositorio no lo intenta y el trigger de la base lo rechaza |
+
+`SUBMITTED` nunca se trata como confirmado. Un RPC que no responde no cambia ningún estado y no consume intentos: solo se anota el nombre del error.
+
+**Criterio de confirmación.** Para escribir `CONFIRMED` con una transacción tienen que cumplirse todas: (1) el recibo existe; (2) no revirtió; (3) fue enviada al contrato configurado; (4) ese contrato emitió exactamente un evento `Anchored`, con el hash del certificado; (5) tiene al menos 1 confirmación (decisión de la sección 4.D); (6) una lectura independiente del valor guardado en el contrato, `anchoredAt(hash)`, devuelve la misma fecha que el evento. Si el recibo y el valor guardado no coinciden, no se confirma nada y se vuelve a preguntar después.
+
+#### Envío sin duplicados
+
+- Antes de firmar se pregunta a la cadena si el hash ya está.
+- El hash de la transacción se calcula al firmar y se guarda **antes** de difundirla. Un tiempo agotado o una caída entre el envío y la respuesta deja un resultado desconocido que se resuelve después por ese hash, en vez de reenviar a ciegas.
+- Solo se reenvía cuando la cadena dice que esa transacción revirtió, o cuando el nodo sigue sin conocerla después de 2 minutos (`lostAfterMs`) y el hash no está anclado.
+- Dos procesos sobre la misma fila: los dos pueden firmar, pero solo el que gana el `UPDATE` condicional difunde; la transacción del otro se descarta sin salir del proceso.
+- Un anclaje por vez dentro de un proceso, esperando brevemente el recibo (hasta ~10 s) antes del siguiente, para que los nonces sean consecutivos.
+- Última barrera, fuera del backend: el contrato rechaza un hash repetido (`AlreadyAnchored`).
+
+#### Recuperación (F6.5)
+
+Un barrido al arrancar y cada 15 segundos, más uno al emitir un certificado (sin esperar ni bloquear la emisión). Toma hasta 25 filas `SUBMITTED` y `PENDING` del contrato configurado (primero las `SUBMITTED`, después las más antiguas). Los barridos no se superponen dentro de un proceso, y ejecutarlos de más es inocuo.
+
+| Situación | Qué pasa |
+|---|---|
+| Reinicio después del envío | La fila está `SUBMITTED` con su `txHash`: el barrido la confirma por ese hash, sin firmar nada |
+| `PENDING` nunca enviado | Se envía en el primer barrido |
+| `SUBMITTED`, transacción pendiente | Se espera; no se envía otra |
+| `SUBMITTED`, transacción minada | Se confirma si la evidencia coincide |
+| Transacción revertida | Vuelve a `PENDING` (o `CONFIRMED` sin transacción si el hash ya está); al quinto intento, `FAILED` |
+| Tiempo agotado con resultado desconocido | `SUBMITTED` hasta saber: minada → `CONFIRMED`; desconocida tras 2 minutos → `PENDING` |
+| RPC caído | Ningún cambio de estado; se reintenta en el barrido siguiente |
+| `FAILED` | El barrido no lo toca; solo `retry()` |
+| Dos procesos sobre la misma fila | Un `UPDATE` condicional por transición: uno gana, el otro no cambia nada |
+| `CONFIRMED` | El barrido no lo lee |
+
+#### Verificación integral (F6.6)
+
+`GET …/verify` y `POST …/verify-file` comparan el certificado, el registro `Anchor` y la cadena, consultada en vivo cada vez. La respuesta agrega `anchor` (`status`, `txHash`, `chainId`, `contractAddress`, o `null`), solo informativo. Orden de evaluación, después de las comprobaciones de archivo y de registro, que no cambiaron:
+
+| Situación | Resultado |
+|---|---|
+| El registro nombra otro contrato u otra cadena que los configurados | `UNVERIFIABLE` / `ANCHOR_TARGET_MISMATCH` (nuevo): desde aquí no se puede comprobar lo que afirma |
+| La cadena no responde (al leer el hash o la transacción) | `UNVERIFIABLE` / `ANCHOR_UNAVAILABLE` |
+| Hash en la cadena; sin registro (certificado anterior al anclaje), o registro `PENDING` / `SUBMITTED` / `FAILED` | `VALID`: decide la cadena; el registro solo va atrasado |
+| Hash en la cadena; registro `CONFIRMED` y todo coincide (fecha y, si la hay, transacción con su evidencia) | `VALID` |
+| Hash en la cadena; registro `CONFIRMED` cuya fecha o transacción no coincide (revirtió, inexistente, otro contrato, otro hash, otra fecha) | `INVALID` / `ANCHOR_RECORD_MISMATCH` (nuevo) |
+| Hash ausente; registro `CONFIRMED` | `INVALID` / `NOT_ANCHORED` |
+| Hash ausente; sin registro o registro `PENDING` / `SUBMITTED` / `FAILED` | `PENDING` / `NOT_ANCHORED`, con el estado del registro visible en `anchor` |
+| Sin contrato configurado | `UNVERIFIABLE` / `ANCHOR_NOT_CONFIGURED`, como antes; la tabla `Anchor` ni se consulta |
+
+Reglas: `VALID` exige siempre la respuesta positiva de la cadena en ese momento; ni la base ni una respuesta anterior la sustituyen. Lo que no se pudo consultar es `UNVERIFIABLE`, nunca `INVALID` ni `VALID`. La verificación solo lee: no corrige ni modifica registros. La decisión abierta de 11.4 (registro `FAILED` con el hash ausente) quedó como se propuso: `PENDING`.
+
+Qué demuestra y qué no (sin cambios, sección 4): que el archivo y los metadatos coinciden con lo certificado, y que el hash de ese certificado está registrado en el contrato desde una fecha. **No** demuestra procedencia satelital, autoría ni veracidad de los metadatos.
+
+#### Pruebas (todas simuladas)
+
+| Suite | Resultado |
+|---|---|
+| Unitarias | **299/299** en 12 suites (237 anteriores + 62) |
+| e2e en `spaceproof_test` | **244/244** en 8 suites (203 anteriores + 41), dos ejecuciones seguidas |
+| ESLint; tipos incluyendo pruebas; compilación (en directorio aparte) | Sin errores |
+| `prisma migrate diff` (base de pruebas y migraciones) | Sin diferencias; no hay migraciones nuevas |
+| `verify:certificates` | Desarrollo: 0 certificados, código 0. Pruebas: 136 válidos de 141; 5 inválidos, la misma cantidad que los cinco casos forjados de 11.9 (no se volvió a identificar uno por uno) |
+| Contrato | Sin cambios; sus pruebas no se repitieron en local (corren en el CI) |
+
+Cómo se simula: en las unitarias, un RPC falso bajo viem (transporte `custom`), con la clave pública de desarrollo n.º 0 de Hardhat; en los e2e, una cadena en memoria (`FakeChain`: almacenamiento del contrato, transacciones y firmante) contra el PostgreSQL real de pruebas. Los e2e afirman sobre **las filas persistidas**, no sobre valores de retorno.
+
+Cobertura, por requisito:
+
+- **Envío:** un `PENDING` se envía una vez y se confirma; el hash se guarda antes de difundir; solo viaja el hash; `SUBMITTED` y `CONFIRMED` no se reenvían; cadena incorrecta o clave que no es el owner → no se firma nada y ninguna fila cambia; RPC caído antes del envío → `PENDING`, sin gastar intentos, y se recupera solo; rechazo del contrato → cuenta intentos y falla al quinto.
+- **Resultado desconocido:** tiempo agotado con la transacción minada → se confirma por su hash; tiempo agotado y transacción perdida → no se reenvía mientras no se sepa, y solo después de la espera.
+- **Confirmación:** revertida → nunca `CONFIRMED`; pendiente → `SUBMITTED`; otro hash, otro contrato o sin evento → `FAILED` sin reenvío; recibo y valor guardado en desacuerdo → no se confirma; confirmaciones insuficientes → espera; RPC caído durante la confirmación → sin cambios, y después confirma.
+- **Recuperación y concurrencia:** reinicio entre `SUBMITTED` y `CONFIRMED` con un servicio nuevo; reintento tras `FAILED`; barridos repetidos y simultáneos sin duplicados; dos procesos enviando la misma fila (una sola difusión); dos procesos confirmando la misma fila; una confirmación no se puede sobrescribir ni por el repositorio ni por SQL directo.
+- **Secretos:** la clave no aparece en lo firmado, en errores ni al inspeccionar el firmante; `lastError` y los logs guardan solo nombres de error, nunca mensajes (que pueden contener la URL del RPC).
+- **Verificación:** cada fila de la tabla anterior, en unitarias; y por la aplicación completa (emitir por HTTP → anclaje enviado y confirmado en la cadena simulada → `VALID` con `txHash`; archivo alterado; transacción revertida, inexistente, de otro hash o de otro contrato; cadena caída; certificado sin registro).
+
+Dos pruebas existentes cambiaron, por un motivo concreto: dos comparaciones exactas de la respuesta de verificación ahora incluyen `anchor: null`. Además, las suites e2e de F6.1 y F6.3 dejaron de usar la dirección del contrato real en las filas que crean (ahora usan direcciones que no son un contrato): así ninguna fila de prueba puede llegar a enviarse.
+
+#### Riesgos y limitaciones
+
+- **Con la clave configurada, el backend envía transacciones reales**: al arrancar, toda fila `PENDING` o `SUBMITTED` del contrato configurado que haya en su base. Antes de la prueba real hay que revisar qué filas existen (`spaceproof_test` no tiene ninguna del contrato real después de los e2e; comprobado).
+- **Una sola instancia del backend con clave.** Dos instancias no duplican un mismo anclaje, pero pueden chocar de nonce entre anclajes distintos; se recupera solo (la transacción que no entra se da por perdida y se reintenta), con demora.
+- Una transacción dada por perdida que apareciera más tarde, junto con su reintento: una de las dos revierte en el contrato. No hay doble registro; se gasta gas de prueba.
+- Un recibo exitoso que nunca coincida con el valor guardado deja la fila en `SUBMITTED` indefinidamente (no se inventa un resultado). Requiere revisión manual.
+- El frontend todavía no conoce los motivos nuevos (`ANCHOR_RECORD_MISMATCH`, `ANCHOR_TARGET_MISMATCH`) ni el campo `anchor`: hoy los muestra como «Resultado no reconocido», nunca como éxito. Es F7.
+- `retry()` no tiene ruta HTTP ni comando: un `FAILED` solo se reabre por código.
+- La base de desarrollo `spaceproof` sigue sin la migración `Anchor`. Sin variables `ANCHOR_*` el backend no consulta esa tabla; con ellas, falla.
+- Nada de esto se ejecutó contra Fuji.
+
+#### Pendiente para la prueba real en Fuji (requiere autorización expresa)
+
+1. Decidir la base: una con la migración `Anchor` aplicada y sin filas abiertas ajenas a la prueba.
+2. Arrancar una instancia con las tres variables `ANCHOR_*` y la clave del owner; comprobar «Anchor signer ready».
+3. Emitir un certificado sintético y observar: `PENDING` → `SUBMITTED` → `CONFIRMED`, la transacción en el explorador, `GET /verify` → `VALID` con `anchor.txHash`.
+4. Matar el backend justo después del envío y reiniciarlo: debe confirmar sin enviar otra transacción (un solo incremento de nonce).
+5. Registrar aquí hashes, nonce antes y después (hoy 3) y gas. Costo esperado: ~45 700 gas por anclaje; saldo actual ~0,4999 AVAX de prueba.
