@@ -1027,8 +1027,30 @@ Pendiente para F6.4 (no implementado; requisitos):
 | Diagnóstico de Git | RESUELTO | Rama `feat/f6-anchoring`, árbol de trabajo limpio; commits `18d331b` y `3908334`, los dos sobre `origin/main` (`db43fef`); `stash@{0}` de respaldo presente |
 | Revisión antes de publicar | RESUELTO | 16 archivos, todos de F6.1 a F6.3. Ningún `.env` real (están ignorados; solo cambia `backend/.env.example`). La clave real no aparece en los commits. El único valor de 32 bytes agregado es la clave pública de desarrollo n.º 0 de Hardhat, en una prueba y documentada como tal. Sin cambios de dependencias ni de lockfiles. Antes del push: ESLint, tipos con pruebas, 237/237 unitarias y 203/203 e2e |
 | Push y pull request | RESUELTO | PR #5 hacia `main`: https://github.com/null61637/spaceproof/pull/5 |
-| CI de GitHub | EN PROGRESO | Resultado en el propio PR; este documento se actualizará al implementar F6.4 |
+| CI de GitHub | RESUELTO | Los 5 jobs en verde (ver 11.9) |
 | Fusión | PENDIENTE | Requiere la aprobación del responsable del proyecto. No se fusiona automáticamente |
 | F6.4 | PENDIENTE | Empieza después de la fusión. Solo con pruebas simuladas: ninguna transacción real |
 
 Sin transacciones (nonce del owner: 3). La base de desarrollo `spaceproof` sigue sin la migración `Anchor` y no se tocó. El stash de respaldo se conserva.
+
+### 11.9 Segunda auditoría de los cinco certificados inválidos (91 de 96) y resultado del CI del PR #5
+
+**Diagnóstico de Git antes de continuar:** rama `feat/f6-anchoring`, árbol de trabajo limpio, sin trabajo sin explicar; commits `18d331b`, `3908334` y `3f831a1` sobre `origin/main` (`db43fef`) y ya publicados (la rama local y la remota coinciden); `stash@{0}` presente. El PR #5 sigue abierto, sin fusionar.
+
+**Los cinco inválidos.** No se dio por supuesto que fueran los de 11.2: se repitió la comprobación sobre la `spaceproof_test` actual (96 certificados: 52 v1 y 44 v2, todos creados en los 20 segundos de la última ejecución de los e2e). Sin modificar ni borrar ningún registro: la verificación corre en una transacción de solo lectura.
+
+| Certificado | Versión | Qué no coincide | Evidencia | Prueba que lo crea |
+|---|---|---|---|---|
+| `f72d95b4-5c45-42c1-aad4-4424e04d2779` | 2 | `satellite` almacenado «Forged satellite» | El hash almacenado es el del mismo registro con `satellite` = «Sentinel-2A» | `certificates.e2e-spec.ts`, «detects a record whose metadata do not match its hash» |
+| `26d357f8-aeb7-47a8-b6ea-a9d395a1948d` | 1 | `title` almacenado «Forged title» | Hash calculado con «Original title» | `certificates.e2e-spec.ts`, «report a tampered record as invalid» |
+| `5cd4824f-9f63-45eb-a040-9b6fd696f25f` | 1 | `title` almacenado «Forged title» | Hash calculado con «Original title» | `db-privileges.e2e-spec.ts`, T13 |
+| `ea776e5e-acbe-42d4-a1d1-8dea67b11081` | 2 | `satellite` almacenado «Forged» | Hash calculado con «Sentinel-2A» | `db-privileges.e2e-spec.ts`, T17 |
+| `4ac4ac3d-a898-4d0a-81a6-c516f936fe60` | 1 | `title` almacenado «Audit forged» | Hash calculado con «Audit original» | `certificate-audit.e2e-spec.ts` |
+
+Para cada uno se recalculó el hash dos veces con la función de su versión: tal como está almacenado no coincide, y con el valor original que usa la prueba coincide exactamente con `contentHash`. Las cinco pruebas insertan la fila por SQL directo con un hash calculado para otro valor; ninguna la modifica después (no se puede: los certificados son inmutables). Comprobaciones cruzadas: en toda la base hay exactamente 5 filas con esos valores forjados, y son las 5 inválidas; ninguna tiene fila `Anchor`, es decir, ninguna salió del camino de emisión de F6.3; los 91 restantes verifican, incluidos todos los emitidos por la API con y sin anclaje.
+
+Conclusión: **son datos de prueba deliberadamente inconsistentes, no un error de implementación.** El número total cambió de 53 a 96 porque F6.1 y F6.3 agregaron pruebas que crean certificados válidos; los inválidos siguen siendo los mismos cinco casos. Base de desarrollo: 0 certificados, código 0.
+
+**CI del PR #5** (https://github.com/null61637/spaceproof/pull/5), sobre el commit `3f831a1`: los 5 jobs en verde (Backend; Backend E2E; Contracts; Frontend; Docker Compose). Corrige la fila «EN PROGRESO» de 11.8. El workflow no tiene jobs de análisis de seguridad ni de auditoría de dependencias: eso no está validado por el CI.
+
+**Estado:** F6.1 a F6.3 publicadas y validadas, **sin fusionar** (requiere aprobación). F6.4 no se empezó: va después de la fusión, con la rama actualizada sobre ese `main`. Sin transacciones (nonce del owner: 3); base `spaceproof` sin tocar; stash conservado.
