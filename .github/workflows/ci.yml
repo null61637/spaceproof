@@ -1,0 +1,155 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CHECKPOINT_DISABLE: '1'
+  NEXT_TELEMETRY_DISABLED: '1'
+
+jobs:
+  backend:
+    name: Backend (lint, build, unit tests)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.27.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: backend/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      # `pnpm lint` runs with --fix; CI only checks.
+      - run: pnpm exec eslint "{src,test}/**/*.ts" prisma.config.ts
+      - run: pnpm build
+      - run: pnpm test
+
+  e2e:
+    name: Backend E2E (PostgreSQL + bootstrap + migrations)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.27.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: backend/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+
+      # Throwaway credentials, generated per run (no repository secrets).
+      - name: Write .env and .env.test
+        run: |
+          pw() { openssl rand -hex 32; }
+          admin=$(pw); owner=$(pw); app=$(pw)
+          echo "::add-mask::$admin"; echo "::add-mask::$owner"; echo "::add-mask::$app"
+          url() { echo "postgresql://$1:$2@localhost:5432/$3?schema=public"; }
+          cat > .env <<EOF
+          POSTGRES_USER=spaceproof
+          POSTGRES_PASSWORD=$admin
+          POSTGRES_DB=spaceproof
+          POSTGRES_PORT=5432
+          SPACEPROOF_OWNER_PASSWORD=$owner
+          SPACEPROOF_APP_PASSWORD=$app
+          DATABASE_URL=$(url spaceproof_app "$app" spaceproof)
+          MIGRATION_DATABASE_URL=$(url spaceproof_owner "$owner" spaceproof)
+          SHADOW_DATABASE_URL=$(url spaceproof_owner "$owner" spaceproof_shadow)
+          EOF
+          cat > .env.test <<EOF
+          DATABASE_URL=$(url spaceproof_app "$app" spaceproof_test)
+          MIGRATION_DATABASE_URL=$(url spaceproof_owner "$owner" spaceproof_test)
+          EOF
+
+      # A brand-new volume: the image runs db/init/10-roles.sh during initdb.
+      - name: Start PostgreSQL (fresh volume)
+        run: docker compose up -d --wait
+      - name: Bootstrap again (must be idempotent)
+        run: pnpm db:bootstrap
+
+      - name: Migrations (as spaceproof_owner)
+        run: |
+          pnpm exec prisma migrate deploy
+          pnpm exec prisma migrate status
+      - name: No drift between migrations, schema and database
+        run: |
+          pnpm exec prisma migrate diff --from-config-datasource --to-schema prisma/schema.prisma --exit-code
+          pnpm exec prisma migrate diff --from-migrations prisma/migrations --to-schema prisma/schema.prisma --exit-code
+
+      - name: E2E tests (spaceproof_test only)
+        run: pnpm test:e2e
+
+      - name: Bulk certificate verification
+        run: |
+          pnpm build
+          pnpm verify:certificates
+
+      - name: PostgreSQL logs
+        if: failure()
+        run: docker compose logs postgres
+      - name: Stop PostgreSQL
+        if: always()
+        run: docker compose down -v
+
+  frontend:
+    name: Frontend (lint, build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      # The build must not need a running backend.
+      - run: npm run build
+        env:
+          BACKEND_URL: http://127.0.0.1:9
+
+  compose:
+    name: Docker Compose configuration
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Production stack (dummy values)
+        env:
+          DOMAIN: ci.example.invalid
+          POSTGRES_USER: spaceproof
+          POSTGRES_DB: spaceproof
+          POSTGRES_PASSWORD: ci-dummy
+          BASIC_AUTH_USER: ci
+          BASIC_AUTH_HASH: $2a$14$ci.dummy.hash.not.a.real.bcrypt.value.........
+        run: docker compose -f docker-compose.prod.yml config --quiet
+      - name: Development database (dummy values)
+        working-directory: backend
+        env:
+          POSTGRES_USER: spaceproof
+          POSTGRES_PASSWORD: ci-dummy
+          POSTGRES_DB: spaceproof
+          SPACEPROOF_OWNER_PASSWORD: ci-dummy
+          SPACEPROOF_APP_PASSWORD: ci-dummy
+        run: docker compose config --quiet

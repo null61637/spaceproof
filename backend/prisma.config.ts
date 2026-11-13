@@ -7,8 +7,11 @@ export default defineConfig({
     path: 'prisma/migrations',
   },
   datasource: {
-    // Read directly (not via env()) so `prisma generate` works without a .env;
-    // commands that need a database fail clearly if it is unset.
-    url: process.env.DATABASE_URL,
+    // The CLI (migrations) connects as spaceproof_owner, never with the app's
+    // DATABASE_URL. Read directly (not via env()) so `prisma generate` works
+    // without a .env; commands that need a database fail clearly if it is unset.
+    url: process.env.MIGRATION_DATABASE_URL,
+    // Needed by `prisma migrate dev`: the owner cannot create databases.
+    shadowDatabaseUrl: process.env.SHADOW_DATABASE_URL,
   },
 });
