@@ -108,6 +108,12 @@ Para leer el contrato de Fuji, descomentá `ANCHOR_RPC_URL` y `ANCHOR_CONTRACT_A
 
 Guía completa (roles, variables, pruebas, backups, despliegue): [docs/OPERACION.md](docs/OPERACION.md).
 
+## Así se ve
+
+| Certificado anclado y verificación válida | Copia con un bit cambiado |
+|---|---|
+| ![Verificación válida](docs/capturas/03-verificacion-valido.png) | ![Verificación inválida](docs/capturas/04-verificacion-invalido.png) |
+
 ## Demo
 
 Guion de dos minutos, con archivos de ejemplo reproducibles: [docs/DEMO.md](docs/DEMO.md).
@@ -118,7 +124,7 @@ node scripts/demo-files.mjs   # genera demo/escena-demo.tif y su copia con un bi
 
 ## Estado
 
-MVP para hackathon, en testnet. El contrato está desplegado y verificado; el backend emite, verifica y lee la cadena en vivo. El envío automático de anclajes está implementado y probado contra una cadena simulada; **su prueba con transacciones reales en Fuji está pendiente**. El despliegue público todavía no está preparado. Estado detallado, decisiones y pendientes: [docs/ESTADO_Y_PENDIENTES.md](docs/ESTADO_Y_PENDIENTES.md).
+MVP para hackathon, en testnet. El contrato está desplegado y verificado; el backend emite, verifica y lee la cadena en vivo. El ciclo completo se probó con una transacción real en Fuji: el backend emitió un certificado, ancló su huella ([transacción](https://testnet.snowtrace.io/tx/0xcab8d5c131e8d04fb079c81b3d52d10c2c7911efa6816a2fa51cf3e25ff4ea6a)), la confirmó y verificó el archivo original (válido) y una copia con un bit cambiado (inválido). La recuperación ante fallos está probada contra una cadena simulada. El despliegue público todavía no está preparado. Estado detallado, decisiones y pendientes: [docs/ESTADO_Y_PENDIENTES.md](docs/ESTADO_Y_PENDIENTES.md).
 
 | Documento | Contenido |
 |---|---|
