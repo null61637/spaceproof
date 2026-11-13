@@ -1,0 +1,10 @@
+# Hardhat build output (the ABI the backend uses is versioned in abi/).
+/artifacts
+/cache
+/types
+/coverage
+
+# Secrets: the deployment key lives in .env, never in Git.
+.env
+.env.*
+!.env.example

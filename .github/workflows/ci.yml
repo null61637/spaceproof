@@ -130,6 +130,28 @@ jobs:
         env:
           BACKEND_URL: http://127.0.0.1:9
 
+  contracts:
+    name: Contracts (build, typecheck, tests)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: contracts
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: contracts/package-lock.json
+      - run: npm ci
+      # Compiles and rewrites abi/SpaceProofAnchor.json; the committed copy
+      # must already be up to date.
+      - run: npm run build
+      - run: git diff --exit-code -- abi
+      - run: npm run typecheck
+      # Local Hardhat network only: no key, no Fuji.
+      - run: npm test
+
   compose:
     name: Docker Compose configuration
     runs-on: ubuntu-latest

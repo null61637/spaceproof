@@ -251,13 +251,19 @@ describe('CertificatesService', () => {
     });
 
     it('uses the unconfigured reader by default', async () => {
+      // "By default" means no ANCHOR_* variables, whatever the shell has.
+      const inherited = { ...process.env };
+      for (const name of Object.keys(process.env)) {
+        if (name.startsWith('ANCHOR_')) delete process.env[name];
+      }
       const moduleRef = await Test.createTestingModule({
         imports: [CertificatesModule],
       })
         .useMocker((token) =>
           token === PrismaService ? { certificate } : undefined,
         )
-        .compile();
+        .compile()
+        .finally(() => Object.assign(process.env, inherited));
       certificate.findUnique.mockResolvedValue(v2);
       const result = await moduleRef.get(CertificatesService).verify(v2.id);
       expect(result).toMatchObject({
