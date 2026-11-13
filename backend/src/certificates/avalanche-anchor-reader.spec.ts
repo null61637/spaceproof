@@ -7,6 +7,7 @@ import {
   ANCHOR_READ_ABI,
   AvalancheAnchorReader,
   anchorReaderFromEnv,
+  anchorTargetFromEnv,
 } from './avalanche-anchor-reader';
 
 // The contract deployed on Fuji (contracts/deployments/fuji.json).
@@ -213,6 +214,26 @@ describe('anchorReaderFromEnv', () => {
     ],
   ])('fails at startup, instead of falling back, when %s', (_label, env) => {
     expect(() => anchorReaderFromEnv(env)).toThrow(/ANCHOR_/);
+  });
+
+  it('has an anchoring target exactly when it has a chain to read', () => {
+    expect(anchorTargetFromEnv({})).toBeNull();
+    expect(
+      anchorTargetFromEnv({ ANCHOR_RPC_URL: ' ', ANCHOR_CONTRACT_ADDRESS: '' }),
+    ).toBeNull();
+    expect(
+      anchorTargetFromEnv({
+        ANCHOR_RPC_URL: rpc,
+        ANCHOR_CONTRACT_ADDRESS: CONTRACT,
+      }),
+    ).toEqual({ chainId: 43113, contractAddress: CONTRACT });
+    // The same errors as the reader: never a target from half a configuration.
+    expect(() => anchorTargetFromEnv({ ANCHOR_RPC_URL: rpc })).toThrow(
+      /ANCHOR_/,
+    );
+    expect(() =>
+      anchorTargetFromEnv({ ANCHOR_CONTRACT_ADDRESS: CONTRACT }),
+    ).toThrow(/ANCHOR_/);
   });
 
   it('never puts a configured value in its error', () => {

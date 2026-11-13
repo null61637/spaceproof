@@ -1,6 +1,9 @@
 import { Module } from '@nestjs/common';
-import { AnchorReader } from './anchor-reader';
-import { anchorReaderFromEnv } from './avalanche-anchor-reader';
+import { ANCHOR_TARGET, AnchorReader } from './anchor-reader';
+import {
+  anchorReaderFromEnv,
+  anchorTargetFromEnv,
+} from './avalanche-anchor-reader';
 import { CertificatesController } from './certificates.controller';
 import { CertificatesService } from './certificates.service';
 
@@ -14,6 +17,12 @@ import { CertificatesService } from './certificates.service';
     {
       provide: AnchorReader,
       useFactory: () => anchorReaderFromEnv(process.env),
+    },
+    // With the same two variables, every certificate is issued together with
+    // its PENDING anchoring record for that contract.
+    {
+      provide: ANCHOR_TARGET,
+      useFactory: () => anchorTargetFromEnv(process.env),
     },
   ],
 })

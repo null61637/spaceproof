@@ -1,5 +1,6 @@
 import {
   createPublicClient,
+  getAddress,
   http,
   isAddress,
   parseAbi,
@@ -10,6 +11,7 @@ import {
 import {
   AnchorLookup,
   AnchorReader,
+  AnchorTarget,
   UnconfiguredAnchorReader,
 } from './anchor-reader';
 
@@ -78,19 +80,19 @@ export class AvalancheAnchorReader extends AnchorReader {
 }
 
 /**
- * The reader for this environment. With neither variable set there is no
- * chain integration and verification says so. A partial or malformed
- * configuration is an error at startup, never a silent fallback.
+ * The contract this environment is configured for, or null with neither
+ * variable set. A partial or malformed configuration is an error at startup,
+ * never a silent fallback.
  *
  *   ANCHOR_RPC_URL           Fuji C-Chain RPC endpoint
  *   ANCHOR_CONTRACT_ADDRESS  SpaceProofAnchor (contracts/deployments/fuji.json)
  */
-export function anchorReaderFromEnv(
+function anchorConfigFromEnv(
   env: Record<string, string | undefined>,
-): AnchorReader {
+): { rpcUrl: string; contractAddress: Address } | null {
   const rpcUrl = env.ANCHOR_RPC_URL?.trim();
   const address = env.ANCHOR_CONTRACT_ADDRESS?.trim();
-  if (!rpcUrl && !address) return new UnconfiguredAnchorReader();
+  if (!rpcUrl && !address) return null;
   if (!rpcUrl || !address) {
     throw new Error(
       'ANCHOR_RPC_URL and ANCHOR_CONTRACT_ADDRESS must be set together',
@@ -102,8 +104,36 @@ export function anchorReaderFromEnv(
   if (!/^https?:\/\//.test(rpcUrl)) {
     throw new Error('ANCHOR_RPC_URL must be an http(s) URL');
   }
+  return { rpcUrl, contractAddress: address };
+}
+
+/**
+ * The reader for this environment. Without a configured contract there is no
+ * chain integration and verification says so.
+ */
+export function anchorReaderFromEnv(
+  env: Record<string, string | undefined>,
+): AnchorReader {
+  const config = anchorConfigFromEnv(env);
+  if (config === null) return new UnconfiguredAnchorReader();
   return new AvalancheAnchorReader(
-    http(rpcUrl, { timeout: RPC_TIMEOUT_MS, retryCount: 1 }),
-    address,
+    http(config.rpcUrl, { timeout: RPC_TIMEOUT_MS, retryCount: 1 }),
+    config.contractAddress,
   );
+}
+
+/**
+ * Where certificates issued in this environment are to be anchored: the same
+ * contract verification reads. null without a configured contract, and then
+ * certificates are issued without an anchoring record, as before.
+ */
+export function anchorTargetFromEnv(
+  env: Record<string, string | undefined>,
+): AnchorTarget | null {
+  const config = anchorConfigFromEnv(env);
+  if (config === null) return null;
+  return {
+    chainId: ANCHOR_CHAIN_ID,
+    contractAddress: getAddress(config.contractAddress),
+  };
 }

@@ -17,6 +17,7 @@ import { APP_ROLE, OWNER_ROLE } from './test-env';
 const INSUFFICIENT_PRIVILEGE = '42501';
 const RAISE_EXCEPTION = 'P0001';
 const CHECK_VIOLATION = '23514';
+const FEATURE_NOT_SUPPORTED = '0A000';
 
 // Proves the database itself enforces the integrity rules: the runtime role
 // (spaceproof_app) can only read and insert, and the triggers stop even the
@@ -167,17 +168,36 @@ describe('Database privileges (e2e)', () => {
         [APP_ROLE],
       );
       expect(tables.rows).toEqual([
+        { object: 'Anchor', privilege: 'INSERT' },
+        { object: 'Anchor', privilege: 'SELECT' },
         { object: 'Certificate', privilege: 'INSERT' },
         { object: 'Certificate', privilege: 'SELECT' },
       ]);
 
       const columns = await asOwner.query(
-        `SELECT a.attrelid::regclass::text AS object, a.attname
+        `SELECT a.attrelid::regclass::text AS object, a.attname AS "column",
+                p.privilege_type AS privilege
            FROM pg_attribute a CROSS JOIN aclexplode(a.attacl) p
-          WHERE p.grantee = $1::regrole`,
+          WHERE p.grantee = $1::regrole
+          ORDER BY 1, 2, 3`,
         [APP_ROLE],
       );
-      expect(columns.rows).toEqual([]);
+      // Only what tracks the sending of an anchor; nothing on "Certificate".
+      expect(columns.rows).toEqual(
+        [
+          'anchoredAt',
+          'attempts',
+          'blockNumber',
+          'lastError',
+          'status',
+          'txHash',
+          'updatedAt',
+        ].map((column) => ({
+          object: '"Anchor"',
+          column,
+          privilege: 'UPDATE',
+        })),
+      );
 
       // grantee 0 is PUBLIC.
       const schema = await asOwner.query(
@@ -252,6 +272,16 @@ describe('Database privileges (e2e)', () => {
       );
       expect(rows).toEqual([
         {
+          proname: 'anchor_guard',
+          public_execute: false,
+          app_execute: false,
+        },
+        {
+          proname: 'anchor_prevent_delete',
+          public_execute: false,
+          app_execute: false,
+        },
+        {
           proname: 'certificate_prevent_delete',
           public_execute: false,
           app_execute: false,
@@ -325,12 +355,16 @@ describe('Database privileges (e2e)', () => {
       const id = await createCertificate();
       for (const query of [
         asOwner.query('DELETE FROM "Certificate" WHERE id = $1', [id]),
-        asOwner.query('TRUNCATE "Certificate"'),
+        // CASCADE: since "Anchor" references this table, PostgreSQL refuses
+        // a plain TRUNCATE before any trigger runs (checked below).
+        asOwner.query('TRUNCATE "Certificate" CASCADE'),
       ]) {
         const error = await pgError(query);
         expect(error.code).toBe(RAISE_EXCEPTION);
         expect(error.message).toMatch(/cannot be deleted/);
       }
+      const plain = await pgError(asOwner.query('TRUNCATE "Certificate"'));
+      expect(plain.code).toBe(FEATURE_NOT_SUPPORTED);
       const { rowCount } = await asOwner.query(
         'SELECT 1 FROM "Certificate" WHERE id = $1',
         [id],
@@ -541,9 +575,206 @@ describe('Database privileges (e2e)', () => {
           WHERE schemaname = 'public' ORDER BY 1`,
       );
       expect(tables.rows).toEqual([
+        { tablename: 'Anchor' },
         { tablename: 'Certificate' },
         { tablename: '_prisma_migrations' },
       ]);
+    });
+  });
+
+  // The anchoring record of a certificate. The runtime role may create it and
+  // track the sending; what it anchors, and a confirmed result, are fixed.
+  describe('anchors', () => {
+    const CONTRACT = '0xb5cA7811682676e0B7a8fc568B28dbf6f841c8CF';
+    const TX = `0x${'ab'.repeat(32)}`;
+    const UNIQUE_VIOLATION = '23505';
+    const FOREIGN_KEY_VIOLATION = '23503';
+
+    /** A PENDING anchor of a new certificate, inserted as `client`. */
+    async function createAnchor(
+      client: Client = asApp,
+      overrides: Record<string, unknown> = {},
+    ): Promise<{ id: string; certificateId: string }> {
+      const row: Record<string, unknown> = {
+        id: randomUUID(),
+        certificateId: await createCertificate(),
+        chainId: 43113,
+        contractAddress: CONTRACT,
+        updatedAt: new Date().toISOString(),
+        ...overrides,
+      };
+      const columns = Object.keys(row);
+      await client.query(
+        `INSERT INTO "Anchor" (${columns.map((c) => `"${c}"`).join(', ')})
+         VALUES (${columns.map((_, i) => `$${i + 1}`).join(', ')})`,
+        Object.values(row),
+      );
+      return {
+        id: row.id as string,
+        certificateId: row.certificateId as string,
+      };
+    }
+
+    const set = (client: Client, id: string, assignments: string) =>
+      client.query(`UPDATE "Anchor" SET ${assignments} WHERE id = $1`, [id]);
+
+    const confirm = (client: Client, id: string) =>
+      set(
+        client,
+        id,
+        `"status" = 'CONFIRMED', "txHash" = '${TX}', "blockNumber" = 61003076,
+         "anchoredAt" = '2026-11-13T12:18:25Z', "attempts" = 1`,
+      );
+
+    async function read(id: string) {
+      const { rows } = await asOwner.query<Record<string, unknown>>(
+        'SELECT * FROM "Anchor" WHERE id = $1',
+        [id],
+      );
+      return rows[0];
+    }
+
+    it('T21: the app creates a PENDING anchor and tracks it to CONFIRMED', async () => {
+      const { id } = await createAnchor();
+      expect(await read(id)).toMatchObject({
+        status: 'PENDING',
+        txHash: null,
+        blockNumber: null,
+        anchoredAt: null,
+        attempts: 0,
+        lastError: null,
+      });
+
+      await set(asApp, id, `"status" = 'SUBMITTED', "txHash" = '${TX}'`);
+      await set(asApp, id, `"attempts" = 1, "lastError" = 'TimeoutError'`);
+      await confirm(asApp, id);
+      expect(await read(id)).toMatchObject({
+        status: 'CONFIRMED',
+        txHash: TX,
+        blockNumber: '61003076',
+        attempts: 1,
+      });
+    });
+
+    it.each([
+      ['id', `'${randomUUID()}'`],
+      ['certificateId', `'${randomUUID()}'`],
+      ['chainId', '43114'],
+      ['contractAddress', `'0x${'11'.repeat(20)}'`],
+      ['createdAt', `'2000-01-01'`],
+    ])(
+      'T22: %s cannot be changed: no privilege for the app, a trigger for the owner',
+      async (column, value) => {
+        const { id } = await createAnchor();
+        const before = await read(id);
+
+        const denied = await pgError(set(asApp, id, `"${column}" = ${value}`));
+        expect(denied.code).toBe(INSUFFICIENT_PRIVILEGE);
+
+        const blocked = await pgError(
+          set(asOwner, id, `"${column}" = ${value}`),
+        );
+        expect(blocked.code).toBe(RAISE_EXCEPTION);
+        expect(blocked.message).toMatch(/is immutable/);
+        expect(await read(id)).toEqual(before);
+      },
+    );
+
+    it.each([
+      ['back to PENDING', `"status" = 'PENDING'`],
+      ['to FAILED', `"status" = 'FAILED'`],
+      ['another transaction', `"txHash" = '0x${'cd'.repeat(32)}'`],
+      ['another date', `"anchoredAt" = '2000-01-01'`],
+      ['another block', `"blockNumber" = 1`],
+    ])('T23: CONFIRMED is final: rejects %s', async (_case, assignments) => {
+      const { id } = await createAnchor();
+      await confirm(asApp, id);
+      const before = await read(id);
+      for (const client of [asApp, asOwner]) {
+        const error = await pgError(set(client, id, assignments));
+        expect(error.code).toBe(RAISE_EXCEPTION);
+        expect(error.message).toMatch(/is confirmed/);
+      }
+      expect(await read(id)).toEqual(before);
+    });
+
+    it.each<[string, Record<string, unknown>]>([
+      [
+        'CONFIRMED',
+        { status: 'CONFIRMED', anchoredAt: '2026-11-13T12:18:25Z' },
+      ],
+      ['SUBMITTED', { status: 'SUBMITTED', txHash: TX }],
+      ['FAILED', { status: 'FAILED' }],
+      ['PENDING with a transaction', { txHash: TX }],
+      ['PENDING with attempts', { attempts: 3 }],
+    ])('T24: rejects an anchor inserted as %s', async (_case, overrides) => {
+      for (const client of [asApp, asOwner]) {
+        const error = await pgError(createAnchor(client, overrides));
+        expect(error.code).toBe(RAISE_EXCEPTION);
+        expect(error.message).toMatch(/starts as PENDING/);
+      }
+    });
+
+    it('T25: one anchor per certificate, and only for a certificate that exists', async () => {
+      const { certificateId } = await createAnchor();
+      const duplicate = await pgError(createAnchor(asApp, { certificateId }));
+      expect(duplicate.code).toBe(UNIQUE_VIOLATION);
+
+      const orphan = await pgError(
+        createAnchor(asApp, { certificateId: randomUUID() }),
+      );
+      expect(orphan.code).toBe(FOREIGN_KEY_VIOLATION);
+    });
+
+    it.each<[string, Record<string, unknown>]>([
+      ['another chain', { chainId: 43114 }],
+      ['a malformed contract address', { contractAddress: '0x1234' }],
+    ])('T26: rejects an anchor on %s', async (_case, overrides) => {
+      const error = await pgError(createAnchor(asApp, overrides));
+      expect(error.code).toBe(CHECK_VIOLATION);
+    });
+
+    it.each([
+      ['a malformed transaction hash', `"txHash" = '0xABC'`],
+      ['SUBMITTED without a transaction', `"status" = 'SUBMITTED'`],
+      ['CONFIRMED without a date', `"status" = 'CONFIRMED'`],
+      ['negative attempts', `"attempts" = -1`],
+    ])('T26: rejects %s', async (_case, assignments) => {
+      const { id } = await createAnchor();
+      const error = await pgError(set(asApp, id, assignments));
+      expect(error.code).toBe(CHECK_VIOLATION);
+      expect(await read(id)).toMatchObject({ status: 'PENDING' });
+    });
+
+    it('T27: rejects DELETE and TRUNCATE, for the app and for the owner', async () => {
+      const { id } = await createAnchor();
+      for (const query of [
+        asApp.query('DELETE FROM "Anchor" WHERE id = $1', [id]),
+        asApp.query('TRUNCATE "Anchor"'),
+      ]) {
+        expect((await pgError(query)).code).toBe(INSUFFICIENT_PRIVILEGE);
+      }
+      for (const query of [
+        asOwner.query('DELETE FROM "Anchor" WHERE id = $1', [id]),
+        asOwner.query('TRUNCATE "Anchor"'),
+      ]) {
+        const error = await pgError(query);
+        expect(error.code).toBe(RAISE_EXCEPTION);
+        expect(error.message).toMatch(/cannot be deleted/);
+      }
+      expect(await read(id)).toMatchObject({ id });
+    });
+
+    it('T28: an anchor does not change its certificate, which still cannot be updated', async () => {
+      const { certificateId } = await createAnchor();
+      const error = await pgError(
+        asApp.query('UPDATE "Certificate" SET "txHash" = $1 WHERE id = $2', [
+          TX,
+          certificateId,
+        ]),
+      );
+      expect(error.code).toBe(INSUFFICIENT_PRIVILEGE);
+      expect((await verify(certificateId)).valid).toBe(true);
     });
   });
 });

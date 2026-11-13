@@ -20,6 +20,18 @@ export abstract class AnchorReader {
 }
 
 /**
+ * Where new certificates are to be anchored: recorded in the certificate's
+ * Anchor row when it is issued. null when no contract is configured.
+ */
+export interface AnchorTarget {
+  chainId: number;
+  contractAddress: string;
+}
+
+/** Injection token for the AnchorTarget of this environment, or null. */
+export const ANCHOR_TARGET = Symbol('ANCHOR_TARGET');
+
+/**
  * The only implementation until the Avalanche integration exists (phases F5
  * and F6): it talks to no chain and says so. No certificate verifies as
  * anchored with it.
