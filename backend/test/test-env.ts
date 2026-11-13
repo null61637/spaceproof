@@ -67,6 +67,11 @@ export function loadTestEnv(): void {
   if (error) {
     throw new Error('E2E env file not found: copy .env.test.example');
   }
+  // The E2E suite never talks to a chain: no anchoring configuration reaches
+  // the application, neither from the shell nor from the env file.
+  for (const name of Object.keys(process.env)) {
+    if (name.startsWith('ANCHOR_')) delete process.env[name];
+  }
   assertTestDatabaseUrl('DATABASE_URL', process.env.DATABASE_URL, APP_ROLE);
   assertTestDatabaseUrl(
     'MIGRATION_DATABASE_URL',

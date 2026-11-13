@@ -1,0 +1,10 @@
+{
+  "network": "fuji",
+  "chainId": 43113,
+  "contract": "SpaceProofAnchor",
+  "address": "0xb5cA7811682676e0B7a8fc568B28dbf6f841c8CF",
+  "owner": "0x1bBB9Ad2350a5E7e377f5D825039f0b964B0D78a",
+  "transactionHash": "0xf356719551f1ac5b2ab69c2779bea1b056103ca8c2b03af7d131a88ce8b8a997",
+  "blockNumber": 61002732,
+  "deployedAt": "2026-11-13T12:08:01.000Z"
+}

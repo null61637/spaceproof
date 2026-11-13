@@ -1,0 +1,22 @@
+{
+  "name": "spaceproof-contracts",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "UNLICENSED",
+  "scripts": {
+    "build": "hardhat build && hardhat run scripts/export-abi.ts",
+    "test": "hardhat test nodejs",
+    "typecheck": "tsc --noEmit",
+    "deploy:fuji": "hardhat run scripts/deploy.ts --network fuji",
+    "check:fuji": "hardhat run scripts/check.ts --network fuji",
+    "anchor:fuji": "hardhat run scripts/anchor.ts --network fuji"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox-viem": "5.0.7",
+    "@types/node": "22.20.5",
+    "hardhat": "3.21.2",
+    "typescript": "5.9.3",
+    "viem": "2.57.16"
+  }
+}

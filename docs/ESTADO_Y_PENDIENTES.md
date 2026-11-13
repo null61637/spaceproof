@@ -1,6 +1,6 @@
 # SpaceProof — Estado y pendientes
 
-Última actualización: 2026-11-13, al cierre de **F3 y F4**, de su auditoría y de la validación final previa a la integración (sección 8). Fases F0 a F4 terminadas y verificadas en local: ya se puede emitir el certificado de un archivo y verificarlo, por API y desde la interfaz. **F5 en adelante sigue sin implementar: no existe integración con Avalanche**, y por eso ninguna verificación devuelve «válido»: el mejor resultado posible hoy es «coincide con el registro de SpaceProof; no verificable en Avalanche». El trabajo de F3 y F4 está en la rama `feat/f3-f4-certification`, pendiente de fusión en `main`.
+Última actualización: 2026-11-13, con **F5 desplegada, verificada y validada en Avalanche Fuji** (secciones 9 y 10). Fases F0 a F4 terminadas y fusionadas en `main` (PR #3, CI en verde): se puede emitir el certificado de un archivo y verificarlo, por API y desde la interfaz. El contrato `SpaceProofAnchor` está en Fuji en `0xb5cA7811682676e0B7a8fc568B28dbf6f841c8CF`, con el código fuente verificado y dos anclajes de prueba. **El backend ya lee la cadena en vivo** cuando se configuran `ANCHOR_RPC_URL` y `ANCHOR_CONTRACT_ADDRESS`: un certificado cuyo hash está en el contrato verifica como «válido» (comprobado contra Fuji con un certificado sintético). **El backend todavía no ancla por sí mismo** (F6): hoy un certificado nuevo queda en «pendiente» —o en «no verificable en Avalanche» si las variables no están configuradas— hasta que alguien lo ancle a mano. El trabajo de F5 está en la rama `feat/f5-avalanche-contract`, **sin commit y sin CI de GitHub**: F5 no está cerrada formalmente hasta integrarla. La auditoría de esos cambios y el plan de F6 están en la sección 11.
 
 Este documento es la referencia central: qué está hecho y comprobado, qué se decidió, qué riesgos se conocen, qué falta para terminar el MVP y **qué quedó fuera** (sección 7). Detalle operativo en el [README](../README.md) y en [backups.md](backups.md).
 
@@ -24,6 +24,7 @@ Estados usados: **CRÍTICO** (bloquea el funcionamiento o la integridad), **IMPO
 | Cargas rechazadas o interrumpidas no dejan ninguna fila | e2e: metadatos inválidos, sin firma TIFF, vacío, demasiado grande, conexión cortada (con y sin `Content-Length`) |
 | El archivo no se guarda: ni columna binaria, ni escritura a disco, ni acumulación en memoria | e2e (esquema sin `bytea`/`oid`, fila < 1 KB, ningún archivo abierto para escritura durante emisión y verificación, RSS estable con 200 MB) |
 | Sin integración de cadena o con error de RPC el resultado es `UNVERIFIABLE`, nunca `VALID` | Unit y e2e con un lector de anclaje falso (override de proveedor de Nest) |
+| **Lectura del anclaje en Avalanche Fuji** (`AvalancheAnchorReader`): `anchoredAt(hash)` en vivo; exige chain ID 43113; RPC caído, otra cadena, dirección sin contrato o respuesta inválida → `UNVERIFIABLE`; configuración parcial o malformada → el backend no arranca | Unit `avalanche-anchor-reader.spec.ts` (RPC falso, sin red; firma comparada con el ABI versionado). **Además, manual contra Fuji** (sección 10): `VALID`, `PENDING`, `UNVERIFIABLE` y fallo de arranque |
 | `GET /api/certificates/:id/manifest` devuelve el texto exacto cuyo SHA-256 es el hash del certificado | Unit (vector A de la especificación) y e2e |
 | Certificados v1: se listan, consultan y verifican igual; `verify` conserva `valid` | e2e `certificates.e2e-spec.ts` («version-1 certificates»), `db-privileges` |
 | Los logs no contienen metadatos, nombre de archivo ni el valor de la cabecera | e2e `observability.e2e-spec.ts` (emisión correcta, rechazos y errores de base) |
@@ -145,7 +146,7 @@ Las cinco primeras son decisiones de producto; el resto, las decisiones técnica
 | R18 | ~~El hash cubre solo metadatos: no certifica archivos~~ | — | — | **RESUELTO** en F3 (S18) |
 | R19 | La comprobación de `Origin` de las Server Actions no tiene prueba automatizada | Una actualización de Next.js podría cambiarla sin que nadie lo note | Ambos (bajo) | Prueba automatizada del frontend (postergado) |
 | R20 | ~~Subida de hasta 200 MB a través de Caddy y del proxy de Next sin probar~~ | El riesgo **se materializó** y se corrigió: `rewrites()` de Next copia el cuerpo en memoria y lo corta a los 10 MB (una subida de 11 MB fallaba con 500); la suposición sobre `proxy.ts` era incorrecta. Además, `fetch` retiene una segunda copia del cuerpo salvo con `redirect: "error"` y `window: null` (199 MB retenidos frente a ~15 MB) | — | **RESUELTO** en local (sección 8): Route Handler en flujo en lugar de `rewrites()`. Falta repetir la medición en el stack de producción real (P1) |
-| R21 | Fondos de prueba en Fuji | El faucet oficial puede exigir saldo en mainnet o un cupón; sin AVAX de prueba no hay anclaje ni demo | MVP | Conseguir fondos **ya** (próximo paso 2), antes de escribir el contrato |
+| R21 | Fondos de prueba en Fuji | El faucet oficial puede exigir saldo en mainnet o un cupón; sin AVAX de prueba no hay anclaje ni demo | MVP | **RESUELTO** para F5: el owner recibió 0,5 AVAX de prueba y quedan ~0,4999 tras el despliegue y dos anclajes (~45 700 gas por anclaje). Alcanza de sobra para F6 y la demo; vigilar el saldo |
 | R22 | La clave privada que firma los anclajes vive en una variable de entorno del backend | Un compromiso del backend permite anclar hashes arbitrarios en nombre de SpaceProof | Ambos | Aceptado para el MVP: clave exclusiva de Fuji, sin fondos reales, nunca en Git. Custodia de claves postergada |
 | R23 | Dependencia del RPC público de Fuji | Si el RPC no responde, el anclaje queda pendiente y la verificación no puede confirmar la cadena | MVP | La verificación responde «no se pudo comprobar» (nunca «válido»); el anclaje reintenta. Aceptado |
 | R24 | Los metadatos los declara quien emite; no se extraen del archivo ni se contrastan con nada | El certificado prueba que *estos* metadatos quedaron ligados a *este* archivo, no que sean verdaderos, ni que el archivo venga de un satélite, ni quién lo produjo | MVP | Aceptado. Se documenta en «Qué demuestra y qué no» (sección 4), en la interfaz y en el README |
@@ -330,7 +331,7 @@ F5 no depende de F1–F4 y puede avanzar en paralelo. Todo lo demás es secuenci
 | **F2** (hecha) | Esquema para archivos | `schema.prisma`, migración nueva, `db-privileges.e2e-spec.ts` | Columnas de `Certificate` (hash, tamaño y nombre del archivo, metadatos, `hashVersion`); trigger actualizado; `CHECK` | e2e de inmutabilidad ampliados a las columnas nuevas; `migrate diff` sin diferencias; certificados v1 existentes siguen verificando | e2e en verde sobre base nueva y sobre la de desarrollo migrada in-place | Migración aditiva: no editar las aplicadas |
 | **F3** (hecha) | Emitir y verificar con archivo (sin cadena) | `app.setup.ts`, `certificates.controller.ts`, `certificates.service.ts`, DTO | `POST /certificates` en una operación (cuerpo en streaming + cabecera de metadatos); `GET /manifest`; `verify` y `verify-file` (comprobaciones a y b) | e2e: emisión válida; metadatos inválidos → 400 **sin leer el cuerpo**; sin firma TIFF → 415; vacío → 400; > 200 MB → 413; **carga interrumpida → ninguna fila nueva**; **original → coincide; un byte cambiado → `FILE_MISMATCH`**; registro inconsistente → `RECORD_MISMATCH`; CSRF: multipart, `text/plain` y JSON siguen rechazados en la ruta de emisión; los logs no contienen metadatos ni nombre de archivo | Los e2e pasan por HTTP; un archivo de 200 MB sube por Caddy + Next con memoria estable y **sin que aparezca ningún archivo** en los contenedores | R20, R27 |
 | **F4** (hecha) | Demo local sin cadena | `certificate-form.tsx`, `actions.ts`, `lib/api.ts`, `certificates/[id]/page.tsx` | Subida con `fetch` (sustituye la Server Action de emisión), certificado, verificación, aviso de no conservación y «Qué prueba este certificado» | Manual en navegador real (primera vez: hoy no está comprobado) + lint y build | Una persona emite y ve «válido» / «modificado» sin usar la API | — |
-| **F5** | Contrato en Fuji | `contracts/` (nuevo) | `SpaceProofAnchor`, pruebas, script de despliegue, verificación del código en el explorador | Hardhat en red local: ancla; rechaza duplicado; rechaza a quien no es owner; emite evento | Contrato desplegado y verificado en Fuji; dirección y ABI versionadas; un `anchor()` manual visible en el explorador | R21 (fondos) |
+| **F5** (hecha: desplegada y verificada en Fuji, sección 10) | Contrato en Fuji | `contracts/` (nuevo) | `SpaceProofAnchor`, pruebas, script de despliegue, verificación del código en el explorador | Hardhat en red local: ancla; rechaza duplicado; rechaza a quien no es owner; emite evento | Contrato desplegado y verificado en Fuji; dirección y ABI versionadas; un `anchor()` manual visible en el explorador | R21 (fondos) |
 | **F6** | Anclaje automático | Migración `Anchor`, módulo `anchoring` nuevo, `certificates.service.ts` | Tabla y permisos; servicio de envío, seguimiento y barrido; comprobación c en `verify` | Unitarias con cliente de cadena falso: camino feliz, reinicio entre envío y confirmación, hash ya anclado (no reenvía), revert, RPC caído → `UNVERIFIABLE`; e2e de privilegios de `Anchor`; una prueba manual contra Fuji | Un certificado nuevo llega solo a `CONFIRMED` en Fuji; matar el backend a mitad del anclaje no produce ni duplicados ni un certificado atascado | R22, R23 |
 | **F7** | Evidencia en la UI | `certificates/[id]/page.tsx`, `certificate-list.tsx` | Estado del anclaje, enlace al explorador, actualización mientras está pendiente, «Verificalo vos mismo» | Manual en navegador; lint y build | Desde la página del certificado se llega a la transacción en el explorador con un clic | — |
 | **F8** | Entrega | `README.md`, este documento, guion de demo | README al día, con la promesa del producto y sus límites; ensayo completo de la demo (original → válido, modificado → inválido, transacción en el explorador); verificación independiente hecha a mano una vez | Ensayo cronometrado dos veces seguidas | La demo sale completa sin intervención manual y ningún texto promete procedencia, veracidad o autoría | Si se publica en un servidor: P1 antes |
@@ -372,12 +373,12 @@ Decisiones técnicas tomadas al implementar F1 y F2 (ninguna cambia el diseño):
 
 | # | Estado | Pendiente | Resuelve |
 |---|---|---|---|
-| F5 | **CRÍTICO** | Contrato desplegado en Fuji | R1 |
+| F5 | **RESUELTO** | Contrato desplegado y verificado en Fuji (`0xb5cA7811682676e0B7a8fc568B28dbf6f841c8CF`), anclajes de prueba y lectura en vivo desde el backend (sección 10). Sin commit todavía | R21 |
 | F6 | **CRÍTICO** | Modelo `Anchor` y anclaje automático con recuperación | R1, R8 |
 | F7 | IMPORTANTE | Evidencia del anclaje en la interfaz | R9 |
 | F8 | IMPORTANTE | README, ensayo de demo | — |
 
-Ninguno de estos está implementado. F0 a F4 están en «Resueltos». **Siguiente: F5** (contrato en Fuji), que no depende de nada anterior; antes hay que fusionar el pull request de F3 y F4 con el CI en verde.
+F0 a F5 están resueltas (F5 sin commit ni CI de GitHub todavía). F6 a F8 no están implementadas. **Siguiente: F6** (el backend ancla solo); la lista exacta de lo que falta está en la sección 10, «Qué falta para F6». R1 sigue abierto hasta F6: mientras el anclaje sea manual, un certificado nuevo no llega a «válido» por sí solo.
 
 ### Antes de publicar en un servidor (no bloquean la demo local)
 
@@ -601,3 +602,299 @@ Comprobado en la auditoría, sin hallazgos: el hash del archivo y del manifiesto
 - **F5**: conseguir AVAX de prueba en Fuji (R21, sigue sin hacerse); paquete `contracts/` con Hardhat; contrato `SpaceProofAnchor`, pruebas, despliegue y verificación en el explorador; versionar ABI y dirección. No depende de F3 ni F4.
 - **F6**: migración `Anchor` con permisos y trigger; dependencia `viem`; implementación real de `AnchorReader` (reemplaza a `UnconfiguredAnchorReader` en `certificates.module.ts`); servicio de envío, seguimiento y barrido; insertar `Anchor(PENDING)` en la misma transacción que el certificado; distinguir `PENDING` de `INVALID`/`NOT_ANCHORED`; variables `ANCHOR_*`.
 - **F7**: en la página del certificado, reemplazar «Integración pendiente» por el estado real del anclaje y el enlace al explorador; «Verificalo vos mismo» con la descarga del manifiesto (la ruta ya existe).
+
+---
+
+## 9. F5 — contrato de anclaje (2026-11-13)
+
+**Actualización:** el contrato **se desplegó y se verificó en Fuji** después de escribir esta sección, y el criterio de F5 está cumplido: ver la bitácora de la sección 10. Lo que sigue es el registro de la implementación tal como quedó antes del despliegue.
+
+Estado al escribir esta sección (ya superado): **contrato implementado y probado en red local; NO desplegado en Fuji.** El criterio de F5 («contrato desplegado y verificado en Fuji; dirección y ABI versionadas; un `anchor()` manual visible en el explorador») **no está cumplido**: no existe `contracts/deployments/fuji.json`, ni dirección, ni transacción.
+
+### Qué se implementó
+
+- `contracts/` — paquete aislado con Hardhat 3.22 y viem, con su propio `package.json` y lockfile. No toca los de `backend/` ni `frontend/`.
+- `SpaceProofAnchor.sol` (Solidity 0.8.28, EVM `cancun`, optimizador activado), tal como estaba decidido en la sección 4.D:
+  - `owner` inmutable: la cuenta que despliega. Sin transferencia.
+  - `anchoredAt(bytes32) → uint64`, consulta pública: marca de tiempo del bloque, o `0`.
+  - `anchor(bytes32)`: solo el owner; rechaza el hash cero y los duplicados; emite `Anchored(hash, timestamp)`.
+  - Errores `NotOwner()`, `EmptyHash()`, `AlreadyAnchored(hash, anchoredAt)`.
+  - Sin OpenZeppelin, proxy, roles, tokens ni forma de borrar o cambiar una entrada.
+- Pruebas (`test/SpaceProofAnchor.ts`), script de exportación del ABI, script de despliegue y script de comprobación contra la cadena.
+- `abi/SpaceProofAnchor.json` versionado; una prueba y el CI fallan si difiere del contrato compilado.
+- Job `contracts` en el CI: build, ABI al día, tipos y pruebas. No usa clave ni toca Fuji.
+
+### Decisiones técnicas
+
+| Decisión | Motivo |
+|---|---|
+| Hardhat 3 con viem y el ejecutor de pruebas de Node | Es la versión vigente; viem es el mismo cliente que usará el backend |
+| El rechazo del hash cero se agregó al diseño | `0` es el valor de «no anclado»: un hash cero nunca es un SHA-256 real y anclarlo sería un error del llamador |
+| Una sola configuración del compilador para pruebas y despliegue | Lo que se prueba es exactamente lo que se despliega |
+| La clave se llama `ANCHOR_PRIVATE_KEY`, igual que en el backend | Quien despliega es el owner, la única cuenta que puede anclar: es la misma clave |
+| No hay red de mainnet configurada, y los scripts exigen el chain ID 43113 | Imposible desplegar en mainnet por error |
+| El despliegue se niega si ya existe `deployments/fuji.json` | Un segundo despliegue crearía un segundo registro, vacío |
+| Script propio en lugar de Hardhat Ignition | Deja el hash de la transacción y el bloque a la vista y en un archivo simple |
+
+### Pruebas ejecutadas
+
+| Prueba | Resultado |
+|---|---|
+| `npm test` en `contracts/` (red local de Hardhat) | 12/12: owner, hash desconocido → 0, anclaje con marca de tiempo y evento, hash del vector A del manifiesto, independencia entre hashes, duplicado rechazado, no-owner rechazado, hash cero rechazado, lectura pública, superficie del contrato, ABI versionado |
+| Mutaciones del contrato (quitar el control de owner, de duplicado, de hash cero, alterar la marca de tiempo, quitar el evento) | Las cinco hacen fallar las pruebas |
+| `npm run build` y `npm run typecheck` | Sin errores |
+| Ensayo de `deploy:fuji` y `check:fuji` contra un **nodo local** de Hardhat con chain ID 43113 | Despliega, registra y verifica; se niega a un segundo despliegue; detecta un registro alterado. **No es Fuji**: el registro del ensayo se borró |
+| RPC público de Fuji, solo lectura | Responde chain ID 43113 |
+
+No ejecutado: despliegue en Fuji, verificación del código en el explorador, un `anchor()` real, el job nuevo del CI en GitHub.
+
+El ensayo local encontró y corrigió un defecto: el script esperaba 2 confirmaciones; ahora espera 1 (como define la sección 4.D) e imprime el hash de la transacción antes de esperar.
+
+### Qué faltaba para cerrar F5 — RESUELTO (sección 10)
+
+Los cinco puntos están hechos y comprobados en la sección 10. Se conservan como registro.
+
+1. Una clave exclusiva de Fuji en `contracts/.env` (`ANCHOR_PRIVATE_KEY`), con AVAX de prueba (R21, sigue abierto).
+2. `npm run deploy:fuji` y `npm run check:fuji`.
+3. Verificar el código fuente (`npx hardhat verify sourcify --network fuji <dirección>`).
+4. Versionar `deployments/fuji.json` y registrar aquí dirección, transacción y enlace al explorador.
+5. Un `anchor()` manual de prueba, visible en el explorador.
+
+### Qué queda para F6
+
+Lista escrita antes del despliegue. La dependencia `viem`, las variables de lectura y la implementación real de `AnchorReader` **ya están hechas**; la lista vigente y exacta es «Qué falta para F6», en la sección 10.
+
+- Dependencia `viem` en el backend; variables `ANCHOR_RPC_URL`, `ANCHOR_PRIVATE_KEY`, `ANCHOR_CONTRACT_ADDRESS`.
+- Leer la dirección de `contracts/deployments/fuji.json` y el ABI de `contracts/abi/SpaceProofAnchor.json` (decidir cómo llegan a la imagen Docker del backend: hoy su contexto de build es `backend/`).
+- Implementación real de `AnchorReader` con `readContract(anchoredAt)`: `0` → `NOT_ANCHORED`; otro valor → `ANCHORED` con esa fecha; error de RPC → excepción (`UNVERIFIABLE`).
+- Migración `Anchor`; `Anchor(PENDING)` y el certificado en una misma transacción; servicio de envío (`writeContract(anchor)`), seguimiento y barrido. `AlreadyAnchored` debe tratarse como éxito (idempotencia).
+- El contrato guarda segundos (`uint64`); el backend los convierte a fecha.
+
+---
+
+## 10. Ejecución de F5 en Fuji — bitácora (2026-11-13)
+
+Registro del despliegue real, actualizado durante la ejecución. Estados: PENDIENTE, EN PROGRESO, RESUELTO, BLOQUEADO. No contiene claves ni secretos: la clave de despliegue vive solo en `contracts/.env`, ignorado por Git.
+
+### Datos públicos del despliegue
+
+| Dato | Valor |
+|---|---|
+| Red | Avalanche Fuji C-Chain, chain ID 43113 |
+| Contrato `SpaceProofAnchor` | `0xb5cA7811682676e0B7a8fc568B28dbf6f841c8CF` |
+| Owner (única cuenta que puede anclar) | `0x1bBB9Ad2350a5E7e377f5D825039f0b964B0D78a` |
+| Transacción de despliegue | `0xf356719551f1ac5b2ab69c2779bea1b056103ca8c2b03af7d131a88ce8b8a997` (bloque 61002732, 2026-11-13 12:08:01 UTC, 178 763 gas) |
+| Explorador | https://testnet.snowtrace.io/address/0xb5cA7811682676e0B7a8fc568B28dbf6f841c8CF |
+| Código verificado | https://sourcify.dev/server/repo-ui/43113/0xb5cA7811682676e0B7a8fc568B28dbf6f841c8CF |
+| Anclaje de prueba | Hash `0xb448887edc056387c4f2602464db2b7d378338d355b757b61ec4bfa04b70540b`, transacción `0x580dc9f4cc735be60e09f0164c41fe6dad445f0a26b5943d28b2d6224dc941e2` (bloque 61002828, 2026-11-13 12:10:51 UTC, 45 730 gas) |
+| Segundo anclaje de prueba (certificado sintético del backend) | Hash `0xf9d131329a24371e0020a6953ea926b08984ef93a92eb916c2368df98c7dab9c`, transacción `0x2179a2b47a557c7db0e99f2f258a591403c0378a033fc5400f0286ffa8d5dd22` (nonce 2, bloque 61003076, 2026-11-13 12:18:25 UTC, 45 718 gas) |
+
+El segundo hash es el `contentHash` del certificado `df955315-eca6-4c2e-8384-d607554fbd3e` de la base `spaceproof_test` («Prueba de integración F5»: un TIFF sintético de 68 bytes, `prueba-f5.tif`, emitido a las 12:18:10 UTC). Se ancló a mano para probar el lector del backend de punta a punta y **no se había registrado aquí en su momento**: la discrepancia se detectó al retomar el trabajo, porque el nonce del owner en la cadena era 3 y no 2. Comprobado por RPC al registrarlo: transacción del owner al contrato, recibo `success`, un único evento `Anchored` con ese hash y marca 1794572305, igual a la del bloque y a `anchoredAt(hash)`. No contiene datos de usuarios.
+
+El hash de prueba es el SHA-256 del texto UTF-8 `SpaceProof F5 Fuji anchor test 2026-11-13` (sin salto de línea): `printf '%s' 'SpaceProof F5 Fuji anchor test 2026-11-13' | sha256sum`. No corresponde a ningún archivo ni certificado.
+
+### Pasos
+
+| Paso | Estado | Resultado |
+|---|---|---|
+| Inicio de la ejecución | RESUELTO | Autorizada por el responsable del proyecto, solo con AVAX de prueba. Rama `feat/f5-avalanche-contract` |
+| Comprobaciones previas | RESUELTO | La clave configurada deriva la dirección del owner; RPC en chain ID 43113; saldo 0,5 AVAX de prueba, nonce 0; compilación sin errores; ABI sincronizado; 12/12 pruebas |
+| Despliegue en Fuji | RESUELTO | Comprobado por RPC, no por la salida del comando: recibo `success`, 582 bytes de código **idénticos byte a byte** al contrato compilado (salvo el owner inmutable), `owner()` correcto. Registrado en `contracts/deployments/fuji.json`. **Incidente:** `npm run deploy:fuji` falló *después* de enviar la transacción, porque el RPC público todavía no la mostraba cuando Hardhat la consultó; la transacción ya estaba confirmada. No se reenvió nada: se corrigió el script (ya no depende de esa consulta) y se registró el despliegue a partir de su transacción (`DEPLOY_TX`) |
+| Verificación del código en el explorador | RESUELTO | Sourcify: coincidencia exacta de creación y de ejecución (`exact_match`), solc 0.8.28, optimizador 200, EVM `cancun`, sin argumentos de constructor; no requirió clave de API. La fuente publicada es idéntica al archivo local. Snowtrace (Routescan) también lo muestra verificado |
+| Anclaje real de prueba | RESUELTO | `anchor()` confirmado; un único evento `Anchored` con el hash esperado y marca de tiempo 1794571851 |
+| Consultas on-chain | RESUELTO | Por RPC directo, sin Hardhat: `anchoredAt(hash de prueba)` = 1794571851 = marca del bloque = valor del evento; un hash distinto y el mismo hash con un bit cambiado → 0; duplicado simulado → `AlreadyAnchored`; llamada simulada desde otra cuenta → `NotOwner`; hash cero → `EmptyHash`. Nonce del owner en ese momento: 2 (despliegue + un anclaje). **Corrección posterior:** el nonce actual es **3** (`latest` y `pending`), por el segundo anclaje de prueba; las tres transacciones del owner son el despliegue (nonce 0) y los dos anclajes (nonces 1 y 2), sin ninguna pendiente |
+| Integración del backend | RESUELTO (lectura) | `AvalancheAnchorReader` conectado en `certificates.module.ts` por `ANCHOR_RPC_URL` y `ANCHOR_CONTRACT_ADDRESS`; comprobado en vivo contra Fuji (apartado «Prueba en vivo»). Sin esas variables, F3/F4 se comportan igual que antes. La **escritura** de anclajes desde el backend no existe: es F6 (PENDIENTE, ver «Qué falta para F6») |
+| Pruebas | RESUELTO | Todas las suites locales en verde (apartado «Pruebas ejecutadas»). El CI de GitHub con el job nuevo `contracts` no corrió: no hay commit ni push (PENDIENTE) |
+
+### Prueba en vivo del backend contra Fuji (2026-11-13)
+
+Instancia independiente del backend en el puerto **3101** (compilada en un directorio aparte, `backend/.tmp/`, para no tocar el `dist` del servidor de desarrollo de :3001, que siguió funcionando sin cambios), conectada solo a `spaceproof_test` como `spaceproof_app`, con `ANCHOR_RPC_URL` (RPC público de Fuji) y `ANCHOR_CONTRACT_ADDRESS`. **Sin clave privada**: el lector no firma. No se envió ninguna transacción. Se ejecutó **antes** de los e2e, que reconstruyen `spaceproof_test` y eliminan el certificado; el anclaje permanece en la cadena y la evidencia queda aquí.
+
+Certificado sintético usado: `df955315-eca6-4c2e-8384-d607554fbd3e`, `createdAt` `2026-11-13T12:18:10.620Z`, `hashVersion` 2, `contentHash` `f9d131329a24371e0020a6953ea926b08984ef93a92eb916c2368df98c7dab9c`. Su manifiesto (respuesta exacta de `GET …/manifest`, sin salto de línea final):
+
+```json
+{"v":2,"id":"df955315-eca6-4c2e-8384-d607554fbd3e","createdAt":"2026-11-13T12:18:10.620Z","file":{"sha256":"d61c7e5fdda1938b05568b55028fc4d5fda2e4ca265634b0345a08b3f7111678","sizeBytes":68},"metadata":{"title":"Prueba de integración F5","recipient":"SpaceProof (prueba)","satellite":"Ninguno (dato de prueba)","sensor":null,"sceneId":null,"acquiredAt":"2026-11-13T12:00:00.000Z"}}
+```
+
+Cualquiera puede repetir la comprobación sin SpaceProof: el SHA-256 de ese texto (UTF-8) es el hash anclado, y `anchoredAt(0xf9d1…ab9c)` en el contrato devuelve `0x6af70011` = 1794572305 = 2026-11-13T12:18:25Z.
+
+| Comprobación | Esperado | Obtenido |
+|---|---|---|
+| `GET /verify` del certificado anclado | `VALID` | `status: VALID`, `reason: null`, `checks: {file: NOT_CHECKED, record: MATCH, anchor: ANCHORED}`, `anchoredAt: 2026-11-13T12:18:25.000Z` |
+| `anchoredAt` contra la cadena | 12:18:25Z | Igual a `eth_call anchoredAt` directo (1794572305), a la marca del bloque 61003076 y al evento `Anchored` |
+| Hash del manifiesto | = hash anclado | `sha256sum` del cuerpo de `GET /manifest` = `f9d13132…7dab9c` = `storedHash` = `computedHash` = hash de la transacción |
+| `GET /verify` de un certificado v2 sin anclaje (`3ed7431c-…`, hash `fc6db150…90d8`) | `PENDING`, nunca `VALID` | `PENDING` / `NOT_ANCHORED`, `anchoredAt: null`; `eth_call` directo para ese hash → 0 |
+| `GET /verify` de un certificado v1 sin anclaje | `PENDING` | `PENDING` / `NOT_ANCHORED` |
+| `POST /verify-file` del certificado anclado con otro archivo TIFF | `INVALID` | `INVALID` / `FILE_MISMATCH`; la cadena ni se consulta (`anchor: NOT_CHECKED`) |
+| RPC caído (`ANCHOR_RPC_URL=http://127.0.0.1:9`), certificado anclado | `UNVERIFIABLE` | `UNVERIFIABLE` / `ANCHOR_UNAVAILABLE`, `anchoredAt: null`, en ~0,2 s (sin colgarse), dos veces seguidas; lo mismo para el no anclado. `health/ready` sigue `ok` |
+| Solo `ANCHOR_RPC_URL`, o solo `ANCHOR_CONTRACT_ADDRESS` | Falla al iniciar | El proceso termina con código 1: `ANCHOR_RPC_URL and ANCHOR_CONTRACT_ADDRESS must be set together`; no escucha en el puerto |
+| `ANCHOR_RPC_URL` que no es http(s), con credenciales en la URL | Falla al iniciar sin mostrar el valor | Código 1: `ANCHOR_RPC_URL must be an http(s) URL`; el valor no aparece en la salida |
+| Sin variables de anclaje | Igual que F3/F4 | `UNVERIFIABLE` / `ANCHOR_NOT_CONFIGURED` para el certificado anclado y para uno v1 |
+
+El campo `valid` de `GET /verify` es el de compatibilidad con v1 (el registro coincide con su hash) y no depende de la cadena; el resultado es `status`.
+
+Después de la prueba: instancia de :3101 detenida; :3001 intacto (mismo proceso, `health/live` ok); `spaceproof_test` con sus 54 certificados; base `spaceproof` sin tocar; nonce del owner sigue en 3.
+
+### Pruebas ejecutadas (cierre, 2026-11-13)
+
+Todas después de la prueba en vivo y con el código tal como queda en el árbol de trabajo.
+
+| Suite | Resultado |
+|---|---|
+| `npm run check:fuji` con el hash de prueba (`b448887e…540b`) | Código en la cadena: 582 bytes idénticos a esta compilación; chain ID 43113; owner y transacción de despliegue coinciden con `deployments/fuji.json`; hash anclado el 2026-11-13T12:10:51Z |
+| `npm run check:fuji` con el hash del certificado sintético (`f9d13132…7dab9c`) | Ídem; anclado el 2026-11-13T12:18:25Z |
+| `npm run check:fuji` con un hash no anclado (`877b3ddc0045c7dbb066370e9a6f6633bdbfd141f1e15d2fa3c7c4b0c6f55828`, SHA-256 del texto `SpaceProof F5 Fuji hash NOT anchored 2026-11-13`) | Ídem; «not anchored» |
+| contracts: `npm run build` (y otra vez con `hardhat build --force`) | Compila con solc 0.8.28, EVM `cancun`; `abi/SpaceProofAnchor.json` sin cambios (mismo SHA-256 antes y después) |
+| contracts: `npm run typecheck`, `npm test` | Sin errores; 12/12 |
+| backend: ESLint sin `--fix` (el comando del CI) | Sin errores |
+| backend: compilación | Sin errores. Se compiló con `tsc -p tsconfig.build.json` hacia `backend/.tmp/` y no con `pnpm build`, que borra y reescribe el `dist` desde el que corre el servidor de desarrollo de :3001. Mismo compilador y misma configuración; el CI ejecuta `pnpm build`. **Después:** `pnpm build` literal ejecutado sin errores en una copia limpia dentro de un contenedor Linux (sección 11.3) |
+| backend: `pnpm test` | **202/202** en 9 suites (las 179 anteriores más las del lector de Avalanche) |
+| backend: `pnpm test:e2e` (`spaceproof_test`, reconstruida) | **169/169** en 7 suites, la misma cantidad que en F3/F4. Ninguna toca Fuji |
+| backend: `verify:certificates` | Sobre la base de desarrollo (solo lectura, como en el CI): 0 certificados, código 0. Sobre `spaceproof_test` después de los e2e: 53 certificados, 48 válidos y 5 inválidos, que son registros que los e2e insertan inconsistentes a propósito (código 1, esperado). **Después:** los cinco se identificaron y comprobaron uno por uno (sección 11.2) |
+| frontend: `npm run lint`, `npm run build` con `BACKEND_URL=http://127.0.0.1:9` | Sin errores (regresión; el frontend no se modificó) |
+| `actionlint` 1.7.7 sobre `.github/workflows/ci.yml` | Sin hallazgos |
+
+No ejecutado: el CI en GitHub Actions (requiere push), y por lo tanto el job `contracts` en un runner real.
+
+### Bloqueos y pendientes del cierre de F5
+
+| Tema | Estado | Detalle |
+|---|---|---|
+| Commit, push y CI de GitHub de la rama `feat/f5-avalanche-contract` | PENDIENTE | Por indicación expresa no se hizo commit ni push. Hay que versionar `contracts/` (incluidos `abi/` y `deployments/fuji.json`; `contracts/.env` está ignorado), el lector y su spec |
+| Certificado sintético de la prueba en vivo | RESUELTO | Los e2e lo eliminaron al reconstruir `spaceproof_test`, como estaba previsto. Su anclaje es permanente y su manifiesto está copiado arriba |
+| Entradas de prueba en el contrato | Aceptado | Los dos hashes de prueba quedan para siempre en el registro de Fuji. No corresponden a datos de usuarios |
+| Bloqueos | Ninguno | — |
+
+### Qué falta para F6 (lista exacta, nada de esto está implementado)
+
+Lo que F6 **ya recibe hecho**: contrato desplegado y verificado; ABI y dirección versionados; `viem` 2.57.19 en el backend; `AvalancheAnchorReader` (lectura en vivo, chain ID, timeout de 5 s, un reintento) conectado al proveedor `AnchorReader`; `ANCHOR_RPC_URL` y `ANCHOR_CONTRACT_ADDRESS`; la clave del owner en `contracts/.env` con ~0,4999 AVAX de prueba.
+
+1. **Migración `Anchor`** (aditiva, sin editar las aplicadas): una fila por certificado, con estado (`PENDING`, `SUBMITTED`, `CONFIRMED`, `FAILED`), `txHash`, `blockNumber`, marca de tiempo del contrato, intentos y `lastError`. Permisos explícitos: `spaceproof_app` con `SELECT`, `INSERT` y `UPDATE` **solo** de las columnas mutables; trigger que impide cambiar el certificado asociado y volver atrás desde `CONFIRMED`; sin `DELETE`. e2e de privilegios nuevos en `db-privileges.e2e-spec.ts`.
+2. **Firmante**: variable `ANCHOR_PRIVATE_KEY` en el backend (la misma clave del owner; nunca en logs ni en mensajes de error) y un cliente de escritura de viem. Al arrancar, comprobar que la dirección derivada es el `owner()` del contrato y que el chain ID es 43113. Las tres variables se configuran juntas, o solo las dos de lectura.
+3. **Servicio de anclaje** (módulo `anchoring`): `writeContract(anchor)` con nonces en serie (una instancia, una billetera); antes de enviar, leer `anchoredAt(hash)` y, si ya está, marcar `CONFIRMED` sin enviar; tratar el revert `AlreadyAnchored` como éxito; esperar el recibo **consultando de nuevo** (un «no encontrada» inmediato no es un fallo: ver «Hallazgos para F6»); recibo exitoso + 1 confirmación → `CONFIRMED` con `txHash`, bloque y marca de tiempo; revert o tiempo agotado → releer la cadena y reintentar hasta 5 veces, luego `FAILED`. No recorrer eventos (`eth_getLogs` acepta 100 bloques como máximo).
+4. **Emisión**: insertar `Anchor(PENDING)` en la **misma transacción** que el certificado (`certificates.service.ts`, `issue`) y disparar el anclaje después de responder.
+5. **Barrido periódico** que retome `PENDING` y `SUBMITTED` tras un reinicio, sin duplicar envíos.
+6. **Verificación** (`check` en `certificates.service.ts`): usar la fila `Anchor` para distinguir «todavía no anclado» (`PENDING`) de «la base dice `CONFIRMED` y la cadena no lo tiene» (`INVALID` / `NOT_ANCHORED`). Hoy cualquier hash ausente da `PENDING`. Exponer el `txHash` del anclaje en la respuesta para la interfaz (F7), y actualizar [API_EMISION_VERIFICACION.md](API_EMISION_VERIFICACION.md).
+7. **Pruebas**: unitarias con un cliente de cadena falso (camino feliz, reinicio entre envío y confirmación, hash ya anclado, revert, RPC caído → `UNVERIFIABLE`); e2e sin tocar Fuji; una prueba manual contra Fuji: un certificado nuevo llega solo a `CONFIRMED`, y matar el backend a mitad del anclaje no deja duplicados ni un certificado atascado.
+8. **Distribución de ABI y dirección**: el lector usa hoy una firma escrita en el código (comparada por una prueba con el ABI versionado) y la dirección llega por variable. Para escribir hacen falta la firma de `anchor` y la de los errores: decidir si se sigue ese patrón o si el ABI se copia a la imagen (el contexto de build del backend es `backend/`).
+9. **Certificados anteriores a F6** (sin fila `Anchor`): decidir si se anclan con un barrido inicial o se muestran como «emitido antes del anclaje».
+
+Fuera de F6, para entregar SpaceProof: **F7** (estado del anclaje y enlace al explorador en la interfaz; hoy la página del certificado todavía contiene el texto «Integración pendiente»), **F8** (README, guion y ensayo de la demo) y, solo si se publica en un servidor, **P1** (incluye llevar las variables `ANCHOR_*` a `docker-compose.prod.yml` y `.env.production.example`, que en este cierre no se tocaron).
+
+### Hallazgos para F6
+
+- El RPC público de Fuji acepta **como máximo 100 bloques por consulta de eventos** (`eth_getLogs`). El backend no debe depender de recorrer eventos: `anchoredAt(hash)` responde lo mismo con una sola llamada.
+- El RPC público puede tardar un instante en mostrar una transacción recién aceptada. Después de enviar, hay que esperar el recibo consultando de nuevo, no tratar un «no encontrada» inmediato como fallo.
+
+---
+
+## 11. Auditoría de F5 y plan de F6 (2026-11-13)
+
+Auditoría de solo lectura hecha después del cierre de la sección 10. No se modificó código, no se envió ninguna transacción (nonce del owner: 3), no hubo commit ni push, y no se tocó el servidor de :3001 ni ninguna base de datos. **F6 no está implementada**: lo que sigue es un plan.
+
+### 11.1 Cambios de F5 pendientes de commit
+
+Aclaración sobre el informe de cierre: decía «no toqué código» y era cierto solo para esa sesión (que modificó este documento y `contracts/README.md`). **La rama sí contiene código de F5 sin commit**, escrito en las sesiones anteriores del mismo día. Todo lo que sigue está sin versionar.
+
+| Archivo | Qué contiene | ¿Es de F5? | ¿Necesario hoy? | Veredicto |
+|---|---|---|---|---|
+| `contracts/` (15 archivos versionables) | Contrato, pruebas, scripts de despliegue, comprobación y anclaje manual, ABI, `deployments/fuji.json`, configuración de Hardhat, lockfile | Sí: es el entregable de F5 | Sí | Conservar |
+| `.github/workflows/ci.yml` | Job nuevo `contracts` (build, ABI al día, tipos, pruebas en red local). Los demás jobs no cambian | Sí | Sí, para que el CI cubra el contrato | Conservar |
+| `backend/src/certificates/avalanche-anchor-reader.ts` y `.spec.ts` | Lector de solo lectura de `anchoredAt` y 23 pruebas con RPC falso | Es la parte de lectura de F6, adelantada para cumplir «el backend se comunica con el contrato» del cierre de F5 | No para F3/F4; sí para que alguna verificación llegue a `VALID` | Conservar |
+| `backend/src/certificates/certificates.module.ts` | El proveedor `AnchorReader` pasa de la clase fija `UnconfiguredAnchorReader` a una fábrica que lee el entorno | Ídem | Ídem | Conservar |
+| `backend/package.json`, `backend/pnpm-lock.yaml` | Dependencia `viem` 2.57.19 (versión exacta) y sus 11 transitivas; 138 líneas agregadas al lockfile, ninguna quitada | Ídem. `viem` es la dependencia prevista en la sección 4.D | Sí, para el lector | Conservar; ver el hallazgo de versiones |
+| `backend/.env.example` | Dos variables de lectura, comentadas | Sí | No (documentación) | Conservar |
+| `docs/ESTADO_Y_PENDIENTES.md`, `contracts/README.md` | Registro de F5 | Sí | — | Conservar |
+
+Comprobaciones:
+
+- **Secretos:** `contracts/.env` (la clave), `backend/.env` y `backend/.env.test` están ignorados por Git. El valor de la clave se buscó en todos los archivos versionados y versionables: no aparece en ninguno. Los únicos valores hexadecimales de 32 bytes en el diff son hashes y transacciones públicas.
+- **Compatibilidad con F3/F4:** sin variables `ANCHOR_*` la fábrica devuelve el mismo `UnconfiguredAnchorReader` de antes; los 169 e2e pasan sin cambios. No hay migraciones nuevas ni cambios en el frontend, Docker, Caddy o producción.
+- **Cambios accidentales o ajenos:** ninguno encontrado.
+
+Hallazgos (ninguno bloqueaba el CI). **A1 y A2 quedaron RESUELTOS después de la auditoría, antes del commit de F5:** `viem` pasó a 2.57.16 (backend y `contracts/`) y `hardhat` a 3.21.2, con los lockfiles regenerados; el contrato recompilado es idéntico al desplegado (`check:fuji`: 582 bytes iguales), ABI sin cambios, 12/12 pruebas del contrato, 202/202 unitarias y 169/169 e2e del backend. Para A2, la prueba unitaria limpia las variables `ANCHOR_*` y `loadTestEnv` las elimina en los e2e; ambas suites pasan con una variable `ANCHOR_RPC_URL` exportada en la terminal. Las menciones anteriores a `viem` 2.57.19 y Hardhat 3.22 en este documento describen lo instalado en su momento.
+
+| # | Hallazgo | Impacto | Qué hacer |
+|---|---|---|---|
+| A1 | `viem` 2.57.19 y `hardhat` 3.22.0 se publicaron el 2026-11-12, un día antes de instalarlas | Una versión con horas de publicada no tuvo tiempo de revisión pública; `viem` es la biblioteca que en F6 va a manejar la clave privada | Decidir antes de F6: fijar `viem` 2.57.16 (2026-11-03) y `hardhat` 3.21.2 (2026-10-29), las más nuevas con siete días o más, o aceptar las actuales. Cambiar Hardhat no altera el contrato desplegado (el bytecode depende de solc 0.8.28 y de su configuración), pero exige repetir `check:fuji` |
+| A2 | La prueba unitaria «uses the unconfigured reader by default» (`certificates.service.spec.ts`) y los e2e que esperan `ANCHOR_NOT_CONFIGURED` dependen de que el entorno no tenga variables `ANCHOR_*` | Con una sola variable exportada en la terminal la prueba falla (reproducido); con las dos, las pruebas consultarían Fuji de verdad. En el CI no ocurre: no define esas variables, y Jest no carga `backend/.env` | En F6, que agrega una tercera variable: las pruebas deben fijar su propio entorno de anclaje (vacío) en lugar de heredarlo |
+| A3 | El lector adelanta trabajo de F6 dentro de la rama de F5 | Ninguno funcional. Con las variables configuradas y sin F6, un certificado nuevo verifica como `PENDING` hasta que alguien lo ancle a mano | Documentado; por eso las variables quedan comentadas en `.env.example` |
+
+### 11.2 Los cinco certificados inválidos de `spaceproof_test`
+
+Resuelto, con los datos todavía presentes. El verificador (`certificate-audit.ts`) recalcula el hash de cada certificado con la función de su `hashVersion` y lo compara con `contentHash`, en una transacción de solo lectura; cuenta como `invalid` el que no coincide y como `error` el que no se puede calcular. Resultado sobre `spaceproof_test`: 53 certificados (20 v1 y 33 v2), 48 válidos, 5 inválidos, 0 errores.
+
+Los cinco son registros que las pruebas e2e insertan **a propósito** con un hash calculado para otro valor, para comprobar que la verificación los detecta. Se confirmó uno por uno: tal como están no coinciden, y al reponer el valor original el hash recalculado es exactamente el almacenado.
+
+| Certificado | Versión | Campo alterado → valor con el que se calculó el hash | Prueba que lo inserta |
+|---|---|---|---|
+| `ed20745c-2455-4d01-a584-f51ddf74125c` | 2 | `satellite`: «Forged satellite» → «Sentinel-2A» | `certificates.e2e-spec.ts`, «detects a record whose metadata do not match its hash» |
+| `47834754-3beb-4a31-8908-0a8030c062a9` | 1 | `title`: «Forged title» → «Original title» | `certificates.e2e-spec.ts`, «report a tampered record as invalid» |
+| `1eec256f-9ed8-49dd-807b-18941188fe51` | 1 | `title`: «Forged title» → «Original title» | `db-privileges.e2e-spec.ts`, T13 |
+| `a86ae2e6-e184-4416-8f05-e64c89519362` | 2 | `satellite`: «Forged» → «Sentinel-2A» | `db-privileges.e2e-spec.ts`, T17 |
+| `4c328eea-e010-4ef2-97b3-2976652e6aba` | 1 | `title`: «Audit forged» → «Audit original» | `certificate-audit.e2e-spec.ts` |
+
+Conclusión: no hay inconsistencias reales ni errores del verificador; el resultado es el esperado y es coherente con v1 y v2 (tres casos v1 y dos v2, cada uno verificado con la función de su versión). No afecta a certificados reales: la base de desarrollo `spaceproof` tiene 0 certificados y da 0/0 con código 0. Los ids cambian en cada ejecución de los e2e; los cinco casos se repiten.
+
+### 11.3 Validación para el CI
+
+Reproducción de los jobs `contracts` y `backend` del CI en un contenedor Linux (`node:22-bookworm`, pnpm 10.27.0), sobre una **copia limpia** con exactamente los archivos que se versionarían (sin `.env`, sin `node_modules`, sin `dist`, finales de línea LF), sin clave privada y con un RPC inválido en el entorno durante las pruebas del contrato:
+
+| Paso | Resultado |
+|---|---|
+| contracts: `npm ci` (lockfile generado en Windows, instalado en Linux) | Sin errores |
+| contracts: `npm run build` (descarga solc 0.8.28) y `git diff --exit-code -- abi` | Compila; el ABI versionado no cambia |
+| contracts: `npm run typecheck`, `npm test` | Sin errores; 12/12, sin clave y sin tocar Fuji |
+| backend: `pnpm install --frozen-lockfile` | Sin errores: el lockfile corresponde al `package.json` |
+| backend: ESLint (comando del CI) | Sin errores |
+| backend: **`pnpm build` literal** | Sin errores; genera `dist/main.js` y el lector. Cierra la salvedad de la sección 10 sin tocar el `dist` local del servidor de :3001 |
+| backend: `pnpm test` | 202/202 |
+| Árbol de trabajo después de todo | Sin cambios |
+
+No reproducido en Linux en esta auditoría: el job `e2e` (pasó 169/169 en Windows con este mismo código; su infraestructura no cambió desde F3/F4) y los jobs `frontend` y `compose` (sin cambios respecto de `main`).
+
+**Estado del CI: no ejecutado en GitHub.** La rama no existe en el remoto y el workflow solo corre con un pull request o un push a `main`.
+
+Qué falta para integrar F5:
+
+1. Decidir A1 (versiones de `viem` y `hardhat`).
+2. Commit de los archivos de 11.1 (confirmando antes con `git status` que no entra ningún `.env`), push y pull request.
+3. CI de GitHub en verde, incluido el job nuevo `contracts` por primera vez en un runner real. Riesgo que solo puede aparecer allí: la descarga de solc o de paquetes desde el runner.
+4. Fusión en `main`.
+
+Hasta entonces F5 está **desplegada y validada, pero no cerrada formalmente**: sin commit, sin CI de GitHub.
+
+### 11.4 Plan de F6 (propuesto; nada implementado)
+
+Alcance: exactamente los puntos de «Qué falta para F6» (sección 10) y el diseño de las secciones 4.C, 4.D y 4.E. Sin cambios en el contrato, sin transacciones de despliegue, sin F7, F8 ni P1.
+
+Dos decisiones que F6 necesita, con la opción recomendada (la de menor alcance):
+
+| Decisión | Recomendación | Motivo |
+|---|---|---|
+| Cómo llegan el ABI y la dirección al backend (punto 9) | Seguir el patrón del lector: las firmas de `anchor`, `anchoredAt`, `owner` y de los tres errores escritas en el código, con una prueba que las compara con `contracts/abi/SpaceProofAnchor.json`; la dirección, por `ANCHOR_CONTRACT_ADDRESS` | No toca el `Dockerfile` ni el contexto de build (eso sería P1); el CI detecta cualquier diferencia con el contrato |
+| Certificados anteriores a F6, sin fila `Anchor` (punto 10) | No anclarlos automáticamente. Se siguen verificando contra la cadena en vivo como hoy; la sección 4.C ya define «sin fila `Anchor`» como certificado heredado | La base de desarrollo tiene 0 certificados y no hay producción comprobada: un barrido inicial sería código sin datos sobre los que actuar |
+
+Subtareas, en orden. F6.1 y F6.2 no dependen entre sí y pueden hacerse en paralelo; F6.3 y F6.6 solo necesitan F6.1; F6.4 necesita F6.1 y F6.2; F6.5 necesita F6.4; F6.7 va al final.
+
+| # | Subtarea (puntos de la sección 10) | Archivos | Cambios | Depende de | Pruebas | Riesgos | Criterio de aceptación |
+|---|---|---|---|---|---|---|---|
+| F6.0 | Integrar F5 | Los de 11.1 | Commit, push, PR, CI | — | CI de GitHub | 11.3 | F5 fusionada en `main` con el CI en verde |
+| F6.1 | Migración `Anchor` (punto 1) | `prisma/schema.prisma`, migración nueva, `test/db-privileges.e2e-spec.ts` | Modelo `Anchor` con las columnas de la sección 4.C y `certificateId` único; estados `PENDING`, `SUBMITTED`, `CONFIRMED`, `FAILED`; `GRANT` explícitos: `spaceproof_app` con `SELECT`, `INSERT` y `UPDATE` solo de `status`, `txHash`, `blockNumber`, `anchoredAt`, `attempts`, `lastError`, `updatedAt`; trigger: `CONFIRMED` es final, `certificateId`, `chainId` y `contractAddress` inmutables; `DELETE` y `TRUNCATE` bloqueados. Ninguna migración aplicada se edita; `Certificate` no cambia | — | e2e nuevos de privilegios y de trigger; T11 actualizado; `migrate diff` sin diferencias; ensayo sobre una base con certificados existentes | Una migración fallida en una base con datos; un permiso de más | Los e2e muestran que la app no puede tocar columnas inmutables, salir de `CONFIRMED` ni borrar; los certificados existentes siguen verificando igual |
+| F6.2 | Firmante y validación de arranque (puntos 2, 3 y 9) | `avalanche-anchor-reader.ts` o un archivo vecino, módulo `anchoring` nuevo, `.env.example` | Puerto de escritura (como `AnchorReader`) con implementación viem; `ANCHOR_PRIVATE_KEY` opcional: sin ella el backend queda en solo lectura, como hoy. Al arrancar con clave: chain ID 43113 y dirección derivada igual a `owner()`; si no, el backend no arranca. La clave nunca aparece en logs ni en errores | Decisión del ABI; A1 | Unitarias con RPC falso: clave que no es el owner, otra cadena, clave malformada, configuración parcial, y que ningún mensaje contiene la clave | Fuga de la clave en un log o error (R22); arranque bloqueado si el RPC está caído | Con una clave equivocada o en otra cadena el backend se niega a arrancar; sin clave se comporta como en F5 |
+| F6.3 | `Anchor(PENDING)` al emitir (punto 5) | `certificates.service.ts` (`issue`) y su spec | El certificado y su fila `Anchor` se insertan en una misma transacción | F6.1 | Unitarias y e2e: toda emisión crea las dos filas; si falla una, no queda ninguna; las cargas rechazadas o interrumpidas siguen sin dejar filas | Romper la garantía de F3 «un fallo no deja nada» | Nunca existe un certificado v2 nuevo sin fila `Anchor`, ni una fila `Anchor` sin certificado |
+| F6.4 | Servicio de anclaje (punto 4) | Módulo `anchoring` | Cola en serie (una transacción por vez, una billetera); antes de enviar, leer `anchoredAt`: si ya está, `CONFIRMED` sin enviar; enviar y guardar `SUBMITTED` con `txHash` de inmediato; esperar el recibo reconsultando; éxito + 1 confirmación → `CONFIRMED` con `txHash`, bloque y marca del contrato; `AlreadyAnchored` → éxito; revert o tiempo agotado → releer la cadena, reintentar, y `FAILED` con `lastError` al quinto intento. `lastError` guarda solo el tipo de error. Sin `eth_getLogs` | F6.1, F6.2 | Unitarias con cadena falsa: camino feliz, hash ya anclado (no envía), `AlreadyAnchored`, revert, recibo que tarda, RPC caído, cinco fallos → `FAILED`, dos certificados a la vez → envíos en serie | Dos envíos del mismo hash (el contrato rechaza el segundo; cuesta gas de prueba); un anclaje confirmado por lectura queda sin `txHash` | Un certificado nuevo llega solo a `CONFIRMED`; ningún caso de las unitarias deja un estado incorrecto ni un envío duplicado |
+| F6.5 | Barrido (punto 6) | Módulo `anchoring` | Al arrancar y con `setInterval`, retomar `PENDING` y `SUBMITTED` por el mismo camino de F6.4; el intervalo se cancela al cerrar la aplicación | F6.4 | Unitarias: reinicio entre envío y confirmación, reinicio antes de enviar; los e2e terminan sin procesos colgados | Solaparse con un anclaje en curso | Matar el backend a mitad de un anclaje y reiniciarlo termina en `CONFIRMED`, con una sola entrada en el contrato |
+| F6.6 | Verificación con `Anchor` (punto 7) | `certificates.service.ts` (`check`), su spec, `docs/API_EMISION_VERIFICACION.md` | La cadena se sigue leyendo en vivo. Hash ausente en la cadena: `INVALID` / `NOT_ANCHORED` si la fila dice `CONFIRMED`; `PENDING` en otro caso. La respuesta expone el estado y el `txHash` de la fila. `VALID` sigue exigiendo la respuesta positiva de la cadena | F6.1 | Unitarias de cada combinación de fila y cadena; e2e con lector falso; v1 y certificados sin fila se comportan como hoy | Cambiar el contrato de la API que usa el frontend (solo se agregan campos) | La tabla de la sección 4.E se cumple caso por caso, y ningún caso devuelve `VALID` sin la cadena |
+| F6.7 | Pruebas de cierre (punto 8) y A2 | Specs y e2e, este documento | Las pruebas fijan su propio entorno de anclaje; prueba manual contra Fuji | Todo lo anterior | Suites completas; manual: emitir un certificado → `CONFIRMED` solo → `VALID`; matar el backend a mitad del anclaje | Gasta AVAX de prueba (~45 700 gas por anclaje; hay ~0,4999) | El criterio de F6 de la sección 5, con evidencia registrada aquí |
+
+Punto abierto menor, a confirmar al implementar F6.6: la sección 4.E no dice qué `status` devuelve la verificación cuando la fila está en `FAILED` y el hash no está en la cadena. Propuesta sin valores nuevos: `PENDING`, con el estado `FAILED` de la fila visible en la respuesta.
+
+### 11.5 Riesgos reales
+
+- F5 sin commit: todo el trabajo del contrato y del lector vive solo en este disco (más la copia de resguardo local del cierre).
+- A1: dependencias con un día de publicadas, una de las cuales manejará la clave.
+- R22 pasa a ser efectivo en F6: la clave del owner estará en el entorno del backend.
+- R23: el anclaje y la verificación dependen del RPC público de Fuji; la demo también.
+- R1 sigue abierto hasta que F6 funcione: hoy un certificado nuevo no llega a «válido» por sí solo.
+- La interfaz (F7) todavía dice «Integración pendiente» aunque el backend responda `VALID`: sin F7 la demo no muestra el anclaje.
