@@ -2,7 +2,7 @@
 
 Lo que se muestra: certificar un archivo, ver su huella anclada en Avalanche, verificar el original y ver fallar la verificación de una copia con **un solo bit** cambiado.
 
-> **Estado de este guion.** Los pasos 1, 2, 4 y 5 se pueden ejecutar hoy. El paso 3 (el anclaje llegando solo a `CONFIRMED`, con su transacción en Snowtrace) depende de la **prueba real en Fuji, que todavía no se hizo** y requiere autorización: hasta entonces el anclaje queda `PENDING` y la verificación responde «todavía no registrado», nunca «válido». No presentar la cadena simulada de las pruebas como transacciones reales.
+> **Estado de este guion.** Los cinco pasos se ejecutaron una vez con una transacción real en Fuji (sección 11.13 de [ESTADO_Y_PENDIENTES.md](ESTADO_Y_PENDIENTES.md)); las capturas están en [capturas/](capturas/). El paso 3 necesita la clave del owner configurada: sin ella el anclaje queda `PENDING` y la verificación responde «todavía no registrado», nunca «válido». Cada certificado emitido con la clave configurada envía una transacción de prueba.
 
 ## Preparación (antes de presentar)
 
@@ -56,10 +56,11 @@ Metadatos para escribir en el formulario (declarados, de ejemplo):
 | El panel queda en `SUBMITTED` | La transacción está en camino | Esperar unos segundos; se actualiza solo |
 | `FAILED` | Cinco intentos sin éxito | Revisar saldo y log. No mostrar como éxito |
 
-Plan B sin transacciones: mostrar los pasos 1, 2, 4 y 5 con el anclaje en `PENDING` (la verificación del original dice «coincide, pero todavía no está registrado en Avalanche»; la de la copia alterada dice **INVÁLIDO** igual), y mostrar en Snowtrace los dos anclajes de prueba reales ya existentes en el contrato (sección 10 de [ESTADO_Y_PENDIENTES.md](ESTADO_Y_PENDIENTES.md)), aclarando que se anclaron a mano.
+Plan B sin transacciones: mostrar los pasos 1, 2, 4 y 5 con el anclaje en `PENDING` (la verificación del original dice «coincide, pero todavía no está registrado en Avalanche»; la de la copia alterada dice **INVÁLIDO** igual), y abrir el certificado ya anclado de la prueba real (`/certificates/167f64d3-5881-47c7-b398-e8cf76a3b248`, con su transacción en Snowtrace), verificando contra él los dos archivos de demo.
 
 ## Pendiente antes de presentar
 
-- [ ] Prueba real controlada en Fuji (requiere autorización): un certificado llega solo a `CONFIRMED`.
-- [ ] Capturas o grabación de los pasos 3 y 4 con una transacción real.
+- [x] Prueba real controlada en Fuji: un certificado llegó solo a `CONFIRMED` (certificado `167f64d3-5881-47c7-b398-e8cf76a3b248`, ya emitido en la base de desarrollo: se puede mostrar sin gastar otra transacción).
+- [x] Capturas de los pasos 3, 4 y 5 con la transacción real: [capturas/](capturas/).
+- [ ] Grabación, si se quiere video.
 - [ ] Ensayo cronometrado, dos veces seguidas.

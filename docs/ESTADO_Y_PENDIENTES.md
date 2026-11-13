@@ -1,6 +1,6 @@
 # SpaceProof — Estado y pendientes
 
-Última actualización: 2026-11-13, con **F5 desplegada, verificada y validada en Avalanche Fuji** (secciones 9 y 10). Fases F0 a F4 terminadas y fusionadas en `main` (PR #3, CI en verde): se puede emitir el certificado de un archivo y verificarlo, por API y desde la interfaz. El contrato `SpaceProofAnchor` está en Fuji en `0xb5cA7811682676e0B7a8fc568B28dbf6f841c8CF`, con el código fuente verificado y dos anclajes de prueba. **El backend ya lee la cadena en vivo** cuando se configuran `ANCHOR_RPC_URL` y `ANCHOR_CONTRACT_ADDRESS`: un certificado cuyo hash está en el contrato verifica como «válido» (comprobado contra Fuji con un certificado sintético). **El backend todavía no ancla por sí mismo** (F6): hoy un certificado nuevo queda en «pendiente» —o en «no verificable en Avalanche» si las variables no están configuradas— hasta que alguien lo ancle a mano. El trabajo de F5 está en la rama `feat/f5-avalanche-contract`, fusionada en `main` (PR #4, commit de fusión `db43fef`, CI en verde): **F5 está cerrada.** F6.1 a F6.3 (tabla `Anchor`, firmante, certificado y anclaje `PENDING` en una transacción) están fusionadas en `main` (PR #5, `e4553b5`). F6.4 a F6.6 (envío y confirmación, recuperación tras reinicios y verificación integral) también están en `main` (PR #6, `a705060`), **probadas solo contra una cadena simulada: todavía no se envió ningún anclaje real desde el backend**, y la prueba en Fuji requiere autorización expresa. La interfaz (F7) muestra el estado del anclaje y todos los resultados de la verificación; hay README, guion de demo y archivos de ejemplo reproducibles (F9), todo fusionado en `main` (PR #7, `769cf25`). **Lo único que falta para la demo completa es la prueba real en Fuji**, cuyo procedimiento exacto está en la sección 11.12 y requiere autorización. Detalle en las secciones 11.10 a 11.12. El [README](../README.md) operativo anterior ahora es [OPERACION.md](OPERACION.md).
+Última actualización: 2026-11-13, con **F5 desplegada, verificada y validada en Avalanche Fuji** (secciones 9 y 10). Fases F0 a F4 terminadas y fusionadas en `main` (PR #3, CI en verde): se puede emitir el certificado de un archivo y verificarlo, por API y desde la interfaz. El contrato `SpaceProofAnchor` está en Fuji en `0xb5cA7811682676e0B7a8fc568B28dbf6f841c8CF`, con el código fuente verificado y dos anclajes de prueba. **El backend ya lee la cadena en vivo** cuando se configuran `ANCHOR_RPC_URL` y `ANCHOR_CONTRACT_ADDRESS`: un certificado cuyo hash está en el contrato verifica como «válido» (comprobado contra Fuji con un certificado sintético). **El backend todavía no ancla por sí mismo** (F6): hoy un certificado nuevo queda en «pendiente» —o en «no verificable en Avalanche» si las variables no están configuradas— hasta que alguien lo ancle a mano. El trabajo de F5 está en la rama `feat/f5-avalanche-contract`, fusionada en `main` (PR #4, commit de fusión `db43fef`, CI en verde): **F5 está cerrada.** F6.1 a F6.3 (tabla `Anchor`, firmante, certificado y anclaje `PENDING` en una transacción) están fusionadas en `main` (PR #5, `e4553b5`). F6.4 a F6.6 (envío y confirmación, recuperación tras reinicios y verificación integral) también están en `main` (PR #6, `a705060`); el envío y la confirmación se probaron con una transacción real, y la recuperación y los caminos de fallo, solo contra una cadena simulada. La interfaz (F7) muestra el estado del anclaje y todos los resultados de la verificación; hay README, guion de demo y archivos de ejemplo reproducibles (F9), todo fusionado en `main` (PR #7, `769cf25`). **El MVP está probado de punta a punta en Fuji** (sección 11.13): el backend emitió un certificado, envió una transacción real de anclaje, la confirmó y verificó el original (válido) y una copia con un bit cambiado (inválido). Detalle en las secciones 11.10 a 11.13. El [README](../README.md) operativo anterior ahora es [OPERACION.md](OPERACION.md).
 
 Este documento es la referencia central: qué está hecho y comprobado, qué se decidió, qué riesgos se conocen, qué falta para terminar el MVP y **qué quedó fuera** (sección 7). Detalle operativo en el [README](../README.md) y en [backups.md](backups.md).
 
@@ -1343,3 +1343,74 @@ Si `openAnchors` no es 0, o el firmante no queda listo, **detener la instancia d
 Fuera de esta prueba, a propósito: matar el backend a mitad del anclaje para ver la recuperación con transacciones reales (sería una segunda transacción). Esa parte queda probada solo con la cadena simulada.
 
 **Único paso que requiere autorización:** ejecutar este procedimiento (incluye la migración aditiva en `spaceproof` y una transacción de prueba en Fuji).
+
+### 11.13 Prueba real en Fuji: MVP probado de punta a punta — 2026-11-13
+
+**Resultado: RESUELTO.** Con autorización expresa se ejecutó el procedimiento de 11.12: se aplicó la migración `Anchor` en `spaceproof` y el backend emitió un certificado, envió **una** transacción real de anclaje, la confirmó leyendo la cadena y verificó el archivo original (`VALID`) y su copia con un bit cambiado (`INVALID`). El criterio de aceptación de F6 («un certificado nuevo llega solo a `CONFIRMED` en Fuji») **está cumplido**.
+
+#### Datos de la prueba
+
+| Dato | Valor |
+|---|---|
+| Certificado | `167f64d3-5881-47c7-b398-e8cf76a3b248` («Escena demo — delta del Paraná»), emitido el 2026-11-13T16:02:40.956Z |
+| Archivo | `demo/escena-demo.tif`, 262 266 bytes, sintético |
+| SHA-256 del archivo | `48d4642b97c94355802c06e66db927a602abe222a3d6f457ecbda5dd2bc57bdb` |
+| Hash del manifiesto (`contentHash`) | `6c377d984cdcfd3b517978732a2272415263191510358ffe52c3eedfb999c619` |
+| Transacción de anclaje | [`0xcab8d5c131e8d04fb079c81b3d52d10c2c7911efa6816a2fa51cf3e25ff4ea6a`](https://testnet.snowtrace.io/tx/0xcab8d5c131e8d04fb079c81b3d52d10c2c7911efa6816a2fa51cf3e25ff4ea6a) |
+| Bloque | 61011730, 2026-11-13 16:02:44 UTC; recibo exitoso; 45 730 gas |
+| Nonce del owner | 3 antes → **4** después (`latest` y `pending`), y sigue en 4 medio minuto después de detener la instancia |
+| Estado del anclaje | `CONFIRMED`, 1 intento, sin error |
+| Tiempo | ~4 s de la emisión al bloque; `CONFIRMED` en la base unos 15 s después de emitir |
+
+Manifiesto (respuesta exacta de `GET …/manifest`; su SHA-256 es el `contentHash`):
+
+```json
+{"v":2,"id":"167f64d3-5881-47c7-b398-e8cf76a3b248","createdAt":"2026-11-13T16:02:40.956Z","file":{"sha256":"48d4642b97c94355802c06e66db927a602abe222a3d6f457ecbda5dd2bc57bdb","sizeBytes":262266},"metadata":{"title":"Escena demo — delta del Paraná","recipient":"Jurado de la hackathon","satellite":"Sentinel-2A","sensor":"MSI","sceneId":null,"acquiredAt":"2026-11-01T14:00:51.000Z"}}
+```
+
+#### Comprobaciones
+
+| Paso | Resultado |
+|---|---|
+| Previas | Repositorio y `main` correctos; cadena 43113; nonce 3; saldo ~0,4999 AVAX de prueba; `check:fuji` OK (después de resolver el incidente de abajo) |
+| Base | `spaceproof` en el PostgreSQL local de desarrollo (`127.0.0.1:5433`), 6 migraciones, 0 certificados. Respaldo `pg_dump -Fc` hecho y **restaurado en una base temporal** para comprobarlo (6 migraciones, 3 triggers), que luego se eliminó. El respaldo quedó fuera del repositorio |
+| Migración | `prisma migrate deploy`: aplicada `20261113150000_anchor`; estado al día; 7 migraciones; tabla `Anchor` vacía; permisos por columna correctos. El servidor de :3001 siguió respondiendo |
+| Instancia en :3101 | «Anchor signer ready» con la dirección del owner, y «Anchoring is ON» con `openAnchors: 0`, antes de emitir |
+| Emisión | `201`; `fileSha256` igual al del archivo de demo |
+| Envío y confirmación | Sin intervención: `SUBMITTED` con `txHash` y después `CONFIRMED`; `GET /verify` → `VALID` |
+| Recibo, por RPC directo | `status` 0x1; del owner al contrato; nonce 3; `input` = `anchor(0x6c37…c619)`: solo el hash; un único evento `Anchored` del contrato con ese hash y marca `0x6af734a4` |
+| `anchoredAt(hash)`, por RPC directo | `0x6af734a4` = 1794585764 = marca del bloque 61011730 = `anchoredAt` de la API (2026-11-13T16:02:44Z) |
+| `check:fuji` con el hash | «anchored at 2026-11-13T16:02:44.000Z»; código del contrato idéntico |
+| Verificación del original | `VALID`: archivo, manifiesto y cadena coinciden; `anchor.status: CONFIRMED` con la transacción |
+| Verificación de la copia alterada | `INVALID` / `FILE_MISMATCH`; SHA-256 recibido `c6e8e6c9…a763` |
+| Cierre | Instancias de :3101 y :3100 detenidas; una sola fila `Anchor`, `CONFIRMED`; ninguna abierta; la clave no aparece en el log |
+
+Exactamente una transacción. No hubo despliegues, reenvíos ni otras pruebas con transacciones. El servidor de :3001 no se tocó (mismo proceso).
+
+#### Incidente previo: `check:fuji` informó una diferencia (resuelto, sin riesgo)
+
+Antes de empezar, `check:fuji` respondió «the deployed code is not the code of this build», y la prueba se detuvo ahí. Causa: Git había dejado `SpaceProofAnchor.sol` con finales de línea CRLF en este equipo; el compilador incluye el hash de la fuente en los metadatos del bytecode, así que cambiaban 32 bytes **de ese bloque de metadatos y ninguno del código ejecutable** (comparado byte a byte: idéntico). El contenido versionado no había cambiado. Con la fuente en LF, `check:fuji` vuelve a dar 582 bytes idénticos. Corrección permanente: `.gitattributes` fija `*.sol` en LF. El contrato desplegado no se tocó.
+
+#### Capturas para la presentación (`docs/capturas/`)
+
+Tomadas de la aplicación real (frontend en :3100 contra la instancia de :3101), con el certificado de esta prueba:
+
+| Archivo | Qué muestra |
+|---|---|
+| `01-inicio.png` | Página inicial |
+| `02-certificado-anclado.png` | Certificado con el panel `CONFIRMED`, la transacción y el contrato |
+| `03-verificacion-valido.png` | Verificación del original: **VÁLIDO** |
+| `04-verificacion-invalido.png` | Verificación de la copia alterada: **INVÁLIDO** |
+| `05-telefono.png` | La misma página a 390 px de ancho, sin desborde horizontal |
+
+Con esto quedan vistos en un navegador los paneles `CONFIRMED`, VÁLIDO e INVÁLIDO y el ancho de teléfono, que estaban pendientes en 11.11.
+
+#### Lo que esta prueba no cubre
+
+- La recuperación tras matar el backend a mitad de un anclaje, con transacciones reales: sigue probada solo con la cadena simulada (habría sido una segunda transacción).
+- Los caminos de fallo reales (revert, transacción perdida, RPC caído durante el envío): ídem.
+- El despliegue público (P1).
+
+#### Estado final
+
+**MVP probado de punta a punta en Avalanche Fuji**: certificar → anclar → verificar el original → detectar la copia alterada, por API y por la interfaz. PR #8 (procedimiento) fusionado en `main` (`c0e6e22`). La base `spaceproof` tiene ahora las 7 migraciones, 1 certificado y 1 anclaje confirmado: es el certificado de la demo. Pendiente para presentar: ensayo cronometrado del guion ([DEMO.md](DEMO.md)); cada ensayo que emita un certificado con la clave configurada gasta una transacción de prueba.

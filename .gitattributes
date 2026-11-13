@@ -1,2 +1,5 @@
 # Shell scripts run inside Linux containers: keep LF even with core.autocrlf.
 *.sh text eol=lf
+# Solidity sources are hashed into the contract metadata: CRLF would change
+# the bytecode trailer and make check:fuji report a mismatch on Windows.
+*.sol text eol=lf
