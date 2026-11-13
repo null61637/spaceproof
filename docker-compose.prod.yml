@@ -1,0 +1,153 @@
+# Production stack. Usage (on the server, from the repo root, with .env present):
+#   docker compose -f docker-compose.prod.yml build
+#   docker compose -f docker-compose.prod.yml up -d postgres
+#   docker compose -f docker-compose.prod.yml run --build --rm migrate
+#   docker compose -f docker-compose.prod.yml up -d
+#
+# Always run migrations with --build: `migrate` is in a profile, so a plain
+# `build` skips it and `run` would reuse a stale image without new migrations.
+#
+# WARNING: `docker compose -f docker-compose.prod.yml down -v` DELETES the
+# volumes, i.e. all PostgreSQL data and Caddy's TLS certificates. Use `down`
+# (without -v) to stop the stack and keep the data.
+name: spaceproof
+
+x-hardening: &hardening
+  restart: unless-stopped
+  cap_drop: [ALL]
+  security_opt: ['no-new-privileges:true']
+  logging:
+    driver: json-file
+    options:
+      max-size: 10m
+      max-file: '3'
+
+x-database-url: &database-url postgresql://${POSTGRES_USER:?set POSTGRES_USER in .env}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:?set POSTGRES_DB in .env}?schema=public
+
+services:
+  postgres:
+    <<: *hardening
+    image: postgres:17-alpine
+    # Runs as the image's unprivileged postgres user; a fresh named volume
+    # inherits the image's postgres-owned data directory.
+    user: postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    # No `ports:` on purpose: PostgreSQL is reachable only on the internal
+    # `db` network, never from the host or the internet.
+    networks: [db]
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # One-off task: `docker compose -f docker-compose.prod.yml run --build --rm migrate`.
+  # Applies pending migrations only (prisma migrate deploy never resets data).
+  migrate:
+    <<: *hardening
+    profiles: [migrate]
+    restart: 'no'
+    build:
+      context: ./backend
+      target: migrate
+    environment:
+      DATABASE_URL: *database-url
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [db]
+
+  backend:
+    <<: *hardening
+    build:
+      context: ./backend
+      target: runtime
+    environment:
+      DATABASE_URL: *database-url
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [db, web]
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3001/api').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))"
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  frontend:
+    <<: *hardening
+    build:
+      context: ./frontend
+      args:
+        BACKEND_URL: http://backend:3001
+    environment:
+      BACKEND_URL: http://backend:3001
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks: [web]
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3000/').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))"
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  caddy:
+    <<: *hardening
+    build:
+      # Context is the repo root; the root .dockerignore excludes everything
+      # (this image copies no files, so .env never reaches the builder).
+      dockerfile_inline: |
+        FROM caddy:2.11-alpine
+        # Run unprivileged: drop the binary's file capabilities (ports < 1024
+        # are allowed via the sysctl below instead) and own the state dirs.
+        # setcap comes from libcap, already part of the official image.
+        RUN setcap -r /usr/bin/caddy \
+         && addgroup -S caddy \
+         && adduser -S -G caddy caddy \
+         && chown -R caddy:caddy /data /config
+        USER caddy
+    sysctls:
+      net.ipv4.ip_unprivileged_port_start: 0
+    ports:
+      - '80:80'
+      - '443:443'
+    environment:
+      DOMAIN: ${DOMAIN:?set DOMAIN in .env}
+      BASIC_AUTH_USER: ${BASIC_AUTH_USER:?set BASIC_AUTH_USER in .env}
+      BASIC_AUTH_HASH: ${BASIC_AUTH_HASH:?set BASIC_AUTH_HASH in .env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      frontend:
+        condition: service_healthy
+    networks: [web]
+
+networks:
+  # internal: no route to the outside world; only postgres, migrate and backend.
+  db:
+    internal: true
+  web: {}
+
+volumes:
+  postgres_data:
+  caddy_data:
+  caddy_config:

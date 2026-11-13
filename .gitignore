@@ -1,0 +1,7 @@
+node_modules/
+
+# Secrets: the production .env lives at the repo root on the server.
+.env
+.env.*
+!.env.example
+!.env.production.example

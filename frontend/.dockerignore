@@ -1,0 +1,8 @@
+node_modules
+.next
+frontend
+.env
+.env.*
+Dockerfile
+.dockerignore
+*.log

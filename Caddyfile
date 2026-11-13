@@ -1,0 +1,21 @@
+# Public entry point. Caddy obtains and renews the TLS certificate for {$DOMAIN}
+# automatically (Let's Encrypt) and redirects HTTP to HTTPS.
+
+{$DOMAIN} {
+	# Protects the whole demo, including /api/*.
+	basic_auth {
+		{$BASIC_AUTH_USER} {$BASIC_AUTH_HASH}
+	}
+
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+
+	# Next.js serves the UI and proxies /api/* to the backend over the internal network.
+	reverse_proxy frontend:3000
+}

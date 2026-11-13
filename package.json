@@ -1,0 +1,13 @@
+{
+  "name": "spaceproof",
+  "private": true,
+  "scripts": {
+    "install:all": "pnpm --dir backend install && npm --prefix frontend install",
+    "dev": "concurrently -n backend,frontend -c blue,green \"pnpm --dir backend start:dev\" \"npm --prefix frontend run dev\"",
+    "build": "pnpm --dir backend build && npm --prefix frontend run build",
+    "start": "concurrently -n backend,frontend -c blue,green \"pnpm --dir backend start:prod\" \"npm --prefix frontend run start\""
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}

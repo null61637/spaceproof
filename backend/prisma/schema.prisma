@@ -1,0 +1,22 @@
+generator client {
+  provider     = "prisma-client"
+  output       = "../src/generated/prisma"
+  moduleFormat = "cjs"
+}
+
+// Prisma 7: the connection URL lives in prisma.config.ts, not here.
+datasource db {
+  provider = "postgresql"
+}
+
+// Records are immutable once created (enforced by a database trigger, see the
+// certificate_integrity migration); only txHash may be filled in once.
+model Certificate {
+  id          String   @id @default(uuid())
+  title       String
+  recipient   String
+  // SHA-256 of the canonical record, computed by the backend (certificate-hash.ts).
+  contentHash String   @unique @db.Char(64)
+  txHash      String?
+  createdAt   DateTime @default(now())
+}

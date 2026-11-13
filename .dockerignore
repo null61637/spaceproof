@@ -1,0 +1,4 @@
+# Only the Caddy image builds with the repo root as context, and it copies no
+# files. Exclude everything so secrets (.env) and sources never reach the builder.
+# backend/ and frontend/ have their own .dockerignore.
+*
