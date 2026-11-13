@@ -1,5 +1,5 @@
 import { PrismaClient } from '../generated/prisma/client';
-import { computeCertificateHash } from './certificate-hash';
+import { computeHashForVersion } from './certificate-hash';
 
 export interface CertificateAudit {
   total: number;
@@ -45,6 +45,13 @@ export function auditCertificates(
             recipient: true,
             createdAt: true,
             contentHash: true,
+            hashVersion: true,
+            fileSha256: true,
+            fileSizeBytes: true,
+            satellite: true,
+            sensor: true,
+            sceneId: true,
+            acquiredAt: true,
           },
           orderBy: { id: 'asc' },
           take: batchSize,
@@ -54,7 +61,7 @@ export function auditCertificates(
           audit.total++;
           try {
             if (
-              computeCertificateHash(certificate) === certificate.contentHash
+              computeHashForVersion(certificate) === certificate.contentHash
             ) {
               audit.valid++;
             } else {

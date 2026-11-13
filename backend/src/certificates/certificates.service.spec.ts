@@ -19,6 +19,15 @@ describe('CertificatesService', () => {
     createdAt: new Date('2026-01-02T03:04:05.006Z'),
     txHash: null,
     contentHash: '',
+    // A version-1 row, as the database returns it.
+    hashVersion: 1,
+    fileSha256: null,
+    fileSizeBytes: null,
+    fileName: null,
+    satellite: null,
+    sensor: null,
+    sceneId: null,
+    acquiredAt: null,
   };
   stored.contentHash = computeCertificateHash(stored);
 
@@ -60,10 +69,20 @@ describe('CertificatesService', () => {
 
   it('returns a certificate by id', async () => {
     certificate.findUnique.mockResolvedValue(stored);
-    await expect(service.findOne(stored.id)).resolves.toBe(stored);
+    await expect(service.findOne(stored.id)).resolves.toEqual(stored);
     expect(certificate.findUnique).toHaveBeenCalledWith({
       where: { id: stored.id },
     });
+  });
+
+  it('returns the file size as a plain number (JSON has no bigint)', async () => {
+    certificate.findUnique.mockResolvedValue({
+      ...stored,
+      fileSizeBytes: 209715200n,
+    });
+    const found = await service.findOne(stored.id);
+    expect(found.fileSizeBytes).toBe(209715200);
+    expect(() => JSON.stringify(found)).not.toThrow();
   });
 
   it('throws NotFoundException when the certificate does not exist', async () => {

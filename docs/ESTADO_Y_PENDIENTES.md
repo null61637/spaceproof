@@ -1,6 +1,6 @@
 # SpaceProof — Estado y pendientes
 
-Última actualización: 2026-11-13, diseño del MVP **cerrado** (archivos satelitales + Avalanche, sin almacenamiento de archivos). La sección 1 describe lo implementado al cierre de la fase 3D; las secciones 4 y 5 son un **plan sin implementar**.
+Última actualización: 2026-11-13, al cierre de **F2**. Fases F0 (fusión en `main`), F1 (manifiesto v2) y F2 (esquema y migración) terminadas y verificadas en local. La sección 1 describe lo implementado; de las secciones 4 y 5, **F3 en adelante sigue sin implementar**: todavía no se puede emitir un certificado de archivo ni existe integración con Avalanche.
 
 Este documento es la referencia central: qué está hecho y comprobado, qué se decidió, qué riesgos se conocen, qué falta para terminar el MVP y **qué quedó fuera** (sección 7). Detalle operativo en el [README](../README.md) y en [backups.md](backups.md).
 
@@ -20,6 +20,10 @@ Estados usados: **CRÍTICO** (bloquea el funcionamiento o la integridad), **IMPO
 |---|---|
 | Crear, listar y consultar certificados (API y UI) | e2e `certificates.e2e-spec.ts`; prueba manual de fase 1 por HTTP (sin navegador) |
 | Hash SHA-256 canónico v1 (`id`, `title`, `recipient`, `createdAt`; NFC) calculado solo en el servidor | Unit `certificate-hash.spec.ts` (vector conocido calculado con `sha256sum`); e2e rechaza `contentHash`/`id`/`txHash` enviados por el cliente |
+| Manifiesto v2 (archivo + metadatos) y selección de la función de hash por `hashVersion`; especificación en [manifiesto-v2.md](manifiesto-v2.md) | Unit `certificate-hash.spec.ts`: tres vectores calculados fuera del código (`sha256sum` y `hashlib` sobre el texto de la especificación), determinismo (NFC/NFD, orden de entrada, husos horarios), sensibilidad a cada uno de los once valores, rechazo de valores sin forma canónica, y el vector v1 sin cambios |
+| Esquema para certificados de archivo: `hashVersion`, hash, tamaño y nombre del archivo, metadatos; `CHECK` de forma por versión; inmutabilidad extendida a las columnas nuevas; ninguna columna binaria ni tabla de archivos | e2e `db-privileges.e2e-spec.ts` T16–T20 |
+| `verify` y `verify:certificates` verifican cada certificado con la función de su versión (v1 y v2) | Unit `certificate-audit.spec.ts`; e2e T17 (v2 válido y v2 con metadatos alterados) |
+| La migración de F2 no altera certificados v1 existentes | Ensayo en `spaceproof_test`: esquema anterior, 3 certificados v1, migración aplicada; columnas anteriores idénticas, los 3 con `hashVersion` 1 y `verify:certificates` 3/3 válidos |
 | Verificación de un certificado (`GET /api/certificates/:id/verify`), incluido `valid:false` | e2e T13 (registro insertado con hash que no corresponde) |
 | Inmutabilidad: trigger bloquea `UPDATE` de campos protegidos; `txHash` solo una vez | e2e T8, T9 |
 | `DELETE` y `TRUNCATE` bloqueados por permisos y por trigger (también para el owner) | e2e T7, T10 |
@@ -35,7 +39,7 @@ Estados usados: **CRÍTICO** (bloquea el funcionamiento o la integridad), **IMPO
 | Migraciones sincronizadas con el schema | `prisma migrate status` y `migrate diff` (contra la base y contra la shadow) sin diferencias, en dev y en servidor nuevo |
 | Lint y build de backend y frontend; build del frontend sin backend | Ejecutados localmente |
 
-Últimos resultados: **31/31 unitarios** y **75/75 e2e** (en el servidor de desarrollo y en uno nuevo).
+Últimos resultados (cierre de F2): **63/63 unitarios** y **97/97 e2e**, en la base de tests del servidor de desarrollo y en un servidor PostgreSQL nuevo (bootstrap de roles y las 6 migraciones desde cero). Lint y build del backend sin errores. La base de desarrollo quedó migrada in-place (`migrate status` y `migrate diff` sin diferencias).
 
 ### Comprobado solo manualmente
 
@@ -117,7 +121,7 @@ Las cinco primeras son decisiones de producto; el resto, las decisiones técnica
 | R4 | El backend de producción todavía se conectaría como superusuario | Un fallo en la app tendría privilegios totales sobre la base | Producción | Usar la URL de `spaceproof_app` (P1) |
 | R5 | **Todo el trabajo desde la fase 3B está sin commit** (36 rutas; el único commit es el inicial) | Una limpieza del working tree o un fallo de disco pierde el hardening, las migraciones nuevas y las pruebas | Ambos | **RESUELTO** (S13): commit `15cb52c` con push |
 | R6 | El CI nunca corrió en GitHub | Algo puede diferir en los runners (descarga de motores de Prisma, Docker), y nadie se entera hasta el primer push | Ambos | **RESUELTO** (S14): primera ejecución exitosa |
-| R7 | Sin versión de hash almacenada; `verify()` asume v1 | Al introducir un formato nuevo (p. ej. con hash de archivo), los certificados existentes o los nuevos dejarían de verificar. Un hash anclado es permanente | MVP | Columna `hashVersion` y especificación escrita, antes de anclar (F1, F2) |
+| R7 | ~~Sin versión de hash almacenada; `verify()` asume v1~~ | — | — | **RESUELTO** (S16, S17): columna `hashVersion`, especificación escrita y verificación por versión |
 | R8 | `txHash` es un único campo que solo se completa una vez | Una transacción fallida o reemplazada deja el certificado asociado para siempre a un `txHash` incorrecto | MVP | Tabla `Anchor` con estados (F6) |
 | R9 | La interfaz no permite verificar | Un usuario no puede comprobar un certificado sin usar la API | MVP | Verificación y evidencia en la interfaz (F4, F7) |
 | R10 | Un rol con `INSERT` puede guardar un hash arbitrario (aceptado) | Un registro inconsistente se guarda sin error; la verificación lo marca `valid:false` | Ambos (bajo) | Aceptado. El anclaje solo debe registrar hashes calculados por el servidor |
@@ -242,7 +246,7 @@ Manifiesto canónico v2 — JSON con **orden de claves fijo**, construido por c�
 - El `id` (UUID aleatorio) dentro del manifiesto actúa como sal: el hash publicado en la cadena no permite adivinar los datos personales por fuerza bruta.
 - Versionado: columna `hashVersion` (1 para los existentes, 2 para los nuevos); `verify()` elige la función por versión. v1 no se toca y sus pruebas se conservan. Un formato futuro (coordenadas, varios archivos) es v3, sin migrar lo anclado.
 - El manifiesto no se guarda: se reconstruye desde las columnas (como hoy v1) y se expone en `GET /api/certificates/:id/manifest` para que un tercero lo re-hashee por su cuenta.
-- Especificación escrita con vectores de prueba (`docs/manifiesto-v2.md`), parte de F1.
+- Especificación escrita con vectores de prueba: [manifiesto-v2.md](manifiesto-v2.md) (hecha en F1). Es la referencia normativa; este resumen no la sustituye.
 
 ### C. Base de datos
 
@@ -303,9 +307,9 @@ F5 no depende de F1–F4 y puede avanzar en paralelo. Todo lo demás es secuenci
 
 | Fase | Objetivo | Módulos | Qué se implementa | Pruebas | Terminada cuando | Riesgos / decisiones |
 |---|---|---|---|---|---|---|
-| **F0** | Base limpia | Git | Fusionar `checkpoint/phase-3b-3d` en `main` (PR con CI en verde) | CI | `main` contiene las fases 3B–3D | — |
-| **F1** | Hash v2 especificado | `certificate-hash.ts`, `docs/manifiesto-v2.md` | Función pura del manifiesto v2 junto a v1; selector por versión | Unitarias con vectores calculados fuera del código (`sha256sum`); las de v1 intactas | Los vectores pasan y la especificación permite reimplementar el hash sin leer el código | Congelar la lista de metadatos antes de empezar: una vez anclado, v2 no cambia |
-| **F2** | Esquema para archivos | `schema.prisma`, migración nueva, `db-privileges.e2e-spec.ts` | Columnas de `Certificate` (hash, tamaño y nombre del archivo, metadatos, `hashVersion`); trigger actualizado; `CHECK` | e2e de inmutabilidad ampliados a las columnas nuevas; `migrate diff` sin diferencias; certificados v1 existentes siguen verificando | e2e en verde sobre base nueva y sobre la de desarrollo migrada in-place | Migración aditiva: no editar las aplicadas |
+| **F0** (hecha) | Base limpia | Git | Fusionar `checkpoint/phase-3b-3d` en `main` (PR con CI en verde) | CI | `main` contiene las fases 3B–3D | — |
+| **F1** (hecha) | Hash v2 especificado | `certificate-hash.ts`, `docs/manifiesto-v2.md` | Función pura del manifiesto v2 junto a v1; selector por versión | Unitarias con vectores calculados fuera del código (`sha256sum`); las de v1 intactas | Los vectores pasan y la especificación permite reimplementar el hash sin leer el código | Congelar la lista de metadatos antes de empezar: una vez anclado, v2 no cambia |
+| **F2** (hecha) | Esquema para archivos | `schema.prisma`, migración nueva, `db-privileges.e2e-spec.ts` | Columnas de `Certificate` (hash, tamaño y nombre del archivo, metadatos, `hashVersion`); trigger actualizado; `CHECK` | e2e de inmutabilidad ampliados a las columnas nuevas; `migrate diff` sin diferencias; certificados v1 existentes siguen verificando | e2e en verde sobre base nueva y sobre la de desarrollo migrada in-place | Migración aditiva: no editar las aplicadas |
 | **F3** | Emitir y verificar con archivo (sin cadena) | `app.setup.ts`, `certificates.controller.ts`, `certificates.service.ts`, DTO | `POST /certificates` en una operación (cuerpo en streaming + cabecera de metadatos); `GET /manifest`; `verify` y `verify-file` (comprobaciones a y b) | e2e: emisión válida; metadatos inválidos → 400 **sin leer el cuerpo**; sin firma TIFF → 415; vacío → 400; > 200 MB → 413; **carga interrumpida → ninguna fila nueva**; **original → coincide; un byte cambiado → `FILE_MISMATCH`**; registro inconsistente → `RECORD_MISMATCH`; CSRF: multipart, `text/plain` y JSON siguen rechazados en la ruta de emisión; los logs no contienen metadatos ni nombre de archivo | Los e2e pasan por HTTP; un archivo de 200 MB sube por Caddy + Next con memoria estable y **sin que aparezca ningún archivo** en los contenedores | R20, R27 |
 | **F4** | Demo local sin cadena | `certificate-form.tsx`, `actions.ts`, `lib/api.ts`, `certificates/[id]/page.tsx` | Subida con `fetch` (sustituye la Server Action de emisión), certificado, verificación, aviso de no conservación y «Qué prueba este certificado» | Manual en navegador real (primera vez: hoy no está comprobado) + lint y build | Una persona emite y ve «válido» / «modificado» sin usar la API | — |
 | **F5** | Contrato en Fuji | `contracts/` (nuevo) | `SpaceProofAnchor`, pruebas, script de despliegue, verificación del código en el explorador | Hardhat en red local: ancla; rechaza duplicado; rechaza a quien no es owner; emite evento | Contrato desplegado y verificado en Fuji; dirección y ABI versionadas; un `anchor()` manual visible en el explorador | R21 (fondos) |
@@ -329,15 +333,27 @@ No queda ninguna decisión abierta: el diseño está cerrado.
 | D2 | RESUELTO (2026-11-13) | ¿El servidor conserva el archivo subido? | **No.** Solo hash, nombre, tamaño y metadatos |
 | D3 | RESUELTO (2026-11-13) | ¿Cómo se vincula la carga con el certificado? | Emisión en una única operación, sin registro intermedio |
 
-Queda un dato por fijar antes de F1, que no cambia la arquitectura: la lista definitiva de metadatos (propuesta: `title`, `recipient`, `satellite`, `acquiredAt`; opcionales `sensor`, `sceneId`).
+**Lista de metadatos: congelada en F1.** `title`, `recipient`, `satellite`, `acquiredAt` (obligatorios) y `sensor`, `sceneId` (opcionales). Cualquier cambio es una versión 3 del manifiesto.
+
+Decisiones técnicas tomadas al implementar F1 y F2 (ninguna cambia el diseño):
+
+| Decisión | Motivo |
+|---|---|
+| Un texto vacío en un opcional **no** equivale a `null` (da otro hash); la emisión guardará `null` | Una sola representación de «ausente» |
+| La función de hash rechaza valores sin forma canónica (hash de archivo que no sea 64 hex en minúsculas, tamaño no entero o menor que 1, fecha inválida) | Hashear un valor ambiguo produciría un certificado que nadie puede reproducir |
+| Una versión desconocida o un v2 incompleto es un **error** de verificación, no un «inválido» | No confundir «no se pudo comprobar» con «fue alterado» |
+| `CHECK`: un certificado v1 no puede llevar datos de archivo ni de satélite | Su hash no los cubriría: serían datos sin protección en una fila «verificada» |
+| `CHECK`: `fileSha256` en minúsculas y `fileSizeBytes` > 0, igual que exige el manifiesto | La base no admite lo que el hash rechazaría |
+| `fileName` puede ser nulo en v2 | Es informativo y está fuera del manifiesto |
+| La API devuelve `fileSizeBytes` como número (la columna es `BIGINT`) | JSON no representa `bigint`; sin esto, listar un certificado v2 daba error 500 (detectado por los e2e) |
+| Sin `GRANT` nuevos: `spaceproof_app` conserva solo `SELECT` e `INSERT` | Los permisos de tabla ya cubren las columnas nuevas |
+| Migración `20261113100000_certificate_file_manifest`, numerada después de la última aplicada | Prisma la generó con una marca horaria anterior a `…090000_revoke_public_execute`; se renombró antes de aplicarla para no dejar migraciones fuera de orden |
+| La tabla `Anchor` **no** entró en F2 | Está planificada para F6, junto con el servicio que la usa |
 
 ### Pendientes del MVP
 
 | # | Estado | Pendiente | Resuelve |
 |---|---|---|---|
-| F0 | IMPORTANTE | Fusionar el checkpoint en `main` | — |
-| F1 | **CRÍTICO** | Manifiesto y hash v2 con especificación y vectores | R7, R18 |
-| F2 | **CRÍTICO** | Migración de archivos y `hashVersion` | R7, R18 |
 | F3 | **CRÍTICO** | Emisión en una operación y verificación de archivo, sin almacenamiento | R18 |
 | F4 | **CRÍTICO** | Interfaz de emisión y verificación | R9 |
 | F5 | **CRÍTICO** | Contrato desplegado en Fuji | R1 |
@@ -345,7 +361,7 @@ Queda un dato por fijar antes de F1, que no cambia la arquitectura: la lista def
 | F7 | IMPORTANTE | Evidencia del anclaje en la interfaz | R9 |
 | F8 | IMPORTANTE | README, ensayo de demo | — |
 
-Ninguno está implementado.
+Ninguno de estos está implementado. F0, F1 y F2 están en «Resueltos». **Siguiente: F3.**
 
 ### Antes de publicar en un servidor (no bloquean la demo local)
 
@@ -378,6 +394,9 @@ P1 pasó de CRÍTICO a IMPORTANTE: bloquea la publicación, no el funcionamiento
 | S12 | RESUELTO | README con afirmaciones de integridad correctas y documentación de entornos y riesgos | Revisión de fase 3D |
 | S13 | RESUELTO | Trabajo de las fases 3B–3D con commit y push (antes P0, R5) | Commit `15cb52c` en `origin/checkpoint/phase-3b-3d` |
 | S14 | RESUELTO | Primera ejecución del CI en GitHub (antes P0, R6) | Ejecución de `pull_request` del 2026-11-13 sobre `checkpoint/phase-3b-3d`: exitosa |
+| S15 | RESUELTO | **F0** — checkpoint 3B–3D y planificación fusionados en `main` | PR #1 fusionado con merge commit `51d1d4d`; CI en verde sobre el PR (`4504b58`) y sobre `main` |
+| S16 | RESUELTO | **F1** — manifiesto v2: función, selección por versión y especificación con vectores (R7) | [manifiesto-v2.md](manifiesto-v2.md); unit `certificate-hash.spec.ts` |
+| S17 | RESUELTO | **F2** — esquema y migración para certificados de archivo, compatibles con v1 (R7) | e2e T16–T20; 97/97 e2e en base nueva y en servidor nuevo; ensayo de migración sobre certificados v1; base de desarrollo migrada sin diferencias |
 
 ---
 
