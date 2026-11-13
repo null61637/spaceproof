@@ -1,12 +1,17 @@
 import { Injectable, Logger, Module, OnModuleInit } from '@nestjs/common';
+import { ANCHOR_TARGET, AnchorReader } from '../certificates/anchor-reader';
 import {
+  anchorReaderFromEnv,
+  anchorTargetFromEnv,
+} from '../certificates/avalanche-anchor-reader';
+import { AnchorRepository } from './anchor-repository';
+import {
+  ANCHOR_SIGNER,
   AnchorSigner,
   AnchorSignerConfigError,
   anchorSignerFromEnv,
 } from './anchor-signer';
-
-/** Injection token: the AnchorSigner, or null when no key is configured. */
-export const ANCHOR_SIGNER = Symbol('ANCHOR_SIGNER');
+import { AnchoringService } from './anchoring.service';
 
 /**
  * Checks the signer when the application starts. A key that can never sign
@@ -42,8 +47,24 @@ export class AnchorSignerStartupCheck implements OnModuleInit {
   }
 }
 
+// Everything about the chain, configured by three variables:
+//   ANCHOR_RPC_URL + ANCHOR_CONTRACT_ADDRESS  read the contract (verification)
+//                                             and record a PENDING anchor for
+//                                             every certificate issued;
+//   + ANCHOR_PRIVATE_KEY                      also send those anchors.
+// With none of them there is no chain integration at all.
 @Module({
   providers: [
+    {
+      provide: AnchorReader,
+      useFactory: () => anchorReaderFromEnv(process.env),
+    },
+    {
+      provide: ANCHOR_TARGET,
+      useFactory: () => anchorTargetFromEnv(process.env),
+    },
+    AnchorRepository,
+    AnchoringService,
     {
       provide: ANCHOR_SIGNER,
       useFactory: () => anchorSignerFromEnv(process.env),
@@ -55,6 +76,6 @@ export class AnchorSignerStartupCheck implements OnModuleInit {
       inject: [ANCHOR_SIGNER],
     },
   ],
-  exports: [ANCHOR_SIGNER],
+  exports: [AnchorReader, ANCHOR_TARGET, ANCHOR_SIGNER, AnchoringService],
 })
 export class AnchoringModule {}

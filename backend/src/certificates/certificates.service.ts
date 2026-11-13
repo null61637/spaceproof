@@ -8,7 +8,8 @@ import {
 } from '@nestjs/common';
 import { Certificate } from '../generated/prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
-import { ANCHOR_TARGET, AnchorReader } from './anchor-reader';
+import { AnchoringService } from '../anchoring/anchoring.service';
+import { ANCHOR_TARGET, AnchorReader, anchorEvidence } from './anchor-reader';
 import type { AnchorTarget } from './anchor-reader';
 import {
   canonicalizeForVersion,
@@ -50,6 +51,8 @@ export interface CertificateVerification {
     | 'FILE_MISMATCH'
     | 'RECORD_MISMATCH'
     | 'NOT_ANCHORED'
+    | 'ANCHOR_RECORD_MISMATCH'
+    | 'ANCHOR_TARGET_MISMATCH'
     | 'ANCHOR_NOT_CONFIGURED'
     | 'ANCHOR_UNAVAILABLE'
     | null;
@@ -64,6 +67,17 @@ export interface CertificateVerification {
     receivedSizeBytes: number;
   } | null;
   anchoredAt: Date | null;
+  /**
+   * SpaceProof's own anchoring record, for reference (state of the sending,
+   * transaction to look up in an explorer). null when the certificate has
+   * none. It is never what makes a result VALID: only the chain is.
+   */
+  anchor: {
+    status: 'PENDING' | 'SUBMITTED' | 'CONFIRMED' | 'FAILED';
+    txHash: string | null;
+    chainId: number;
+    contractAddress: string;
+  } | null;
 }
 
 /** A certificate that has a file (hash version 2). */
@@ -77,6 +91,7 @@ export class CertificatesService {
     private readonly prisma: PrismaService,
     private readonly anchorReader: AnchorReader,
     @Inject(ANCHOR_TARGET) private readonly anchorTarget: AnchorTarget | null,
+    private readonly anchoring: AnchoringService,
   ) {}
 
   /**
@@ -106,7 +121,7 @@ export class CertificatesService {
       sceneId: dto.sceneId,
       acquiredAt: dto.acquiredAt,
     };
-    return toRecord(
+    const created = toRecord(
       await this.prisma.certificate.create({
         data: {
           ...record,
@@ -128,6 +143,9 @@ export class CertificatesService {
         },
       }),
     );
+    // Not awaited: sending the anchor never delays or fails the issuing.
+    this.anchoring.wake();
+    return created;
   }
 
   async findAll(): Promise<CertificateRecord[]> {
@@ -194,6 +212,19 @@ export class CertificatesService {
       record: computedHash === certificate.contentHash ? 'MATCH' : 'MISMATCH',
       anchor: 'NOT_CHECKED',
     };
+    // The anchoring record is only read where a contract is configured.
+    const row =
+      this.anchorTarget === null
+        ? null
+        : ((await this.prisma.anchor.findUnique({
+            where: { certificateId: certificate.id },
+          })) ?? null);
+    const anchor: CertificateVerification['anchor'] = row && {
+      status: row.status,
+      txHash: row.txHash,
+      chainId: row.chainId,
+      contractAddress: row.contractAddress,
+    };
     const result = (
       status: CertificateVerification['status'],
       reason: CertificateVerification['reason'],
@@ -207,34 +238,84 @@ export class CertificatesService {
       computedHash,
       file,
       anchoredAt,
+      anchor,
     });
-
-    if (checks.file === 'MISMATCH') return result('INVALID', 'FILE_MISMATCH');
-    if (checks.record === 'MISMATCH') {
-      return result('INVALID', 'RECORD_MISMATCH');
-    }
-
-    // VALID needs a positive answer from the chain. Not being able to ask
-    // (no integration, RPC failure) is never reported as valid.
-    let lookup: Awaited<ReturnType<AnchorReader['lookup']>>;
-    try {
-      lookup = await this.anchorReader.lookup(certificate.contentHash);
-    } catch (error) {
+    const unavailable = (error: unknown): CertificateVerification => {
+      // Name only: an RPC error message can contain the RPC URL.
       this.logger.warn({
         message: 'Anchor lookup failed',
         error: error instanceof Error ? error.name : typeof error,
       });
       checks.anchor = 'UNAVAILABLE';
       return result('UNVERIFIABLE', 'ANCHOR_UNAVAILABLE');
+    };
+
+    if (checks.file === 'MISMATCH') return result('INVALID', 'FILE_MISMATCH');
+    if (checks.record === 'MISMATCH') {
+      return result('INVALID', 'RECORD_MISMATCH');
+    }
+
+    // The record names another contract (or chain) than the one this
+    // environment reads: what it claims cannot be checked from here.
+    if (
+      row !== null &&
+      this.anchorTarget !== null &&
+      (row.chainId !== this.anchorTarget.chainId ||
+        row.contractAddress.toLowerCase() !==
+          this.anchorTarget.contractAddress.toLowerCase())
+    ) {
+      checks.anchor = 'UNAVAILABLE';
+      return result('UNVERIFIABLE', 'ANCHOR_TARGET_MISMATCH');
+    }
+
+    // VALID needs a positive answer from the chain, asked now. Not being able
+    // to ask (no integration, RPC failure) is never reported as valid, and
+    // neither the database nor an earlier answer stands in for the chain.
+    let lookup: Awaited<ReturnType<AnchorReader['lookup']>>;
+    try {
+      lookup = await this.anchorReader.lookup(certificate.contentHash);
+    } catch (error) {
+      return unavailable(error);
     }
     // `?.`: a reader that returns nothing is treated like any unexpected
     // answer, which is never a confirmation.
     switch (lookup?.state) {
-      case 'ANCHORED':
+      case 'ANCHORED': {
         checks.anchor = 'ANCHORED';
+        // A record that says CONFIRMED must agree with the chain in every
+        // detail it keeps: the date and, if it names one, the transaction.
+        if (row?.status === 'CONFIRMED') {
+          const anchoredAt = lookup.anchoredAt.getTime();
+          let consistent = row.anchoredAt?.getTime() === anchoredAt;
+          if (consistent && row.txHash !== null) {
+            let transaction: Awaited<ReturnType<AnchorReader['transaction']>>;
+            try {
+              transaction = await this.anchorReader.transaction(row.txHash);
+            } catch (error) {
+              return unavailable(error);
+            }
+            const evidence =
+              transaction?.state === 'MINED'
+                ? anchorEvidence(
+                    transaction,
+                    row.contractAddress,
+                    certificate.contentHash,
+                  )
+                : null;
+            consistent =
+              evidence?.result === 'MATCH' &&
+              evidence.anchoredAt.getTime() === anchoredAt;
+          }
+          if (!consistent) return result('INVALID', 'ANCHOR_RECORD_MISMATCH');
+        }
         return result('VALID', null, lookup.anchoredAt);
+      }
       case 'NOT_ANCHORED':
         checks.anchor = 'NOT_ANCHORED';
+        // Recorded as confirmed, and the chain does not have it.
+        if (row?.status === 'CONFIRMED') {
+          return result('INVALID', 'NOT_ANCHORED');
+        }
         return result('PENDING', 'NOT_ANCHORED');
       default:
         checks.anchor = 'NOT_CONFIGURED';

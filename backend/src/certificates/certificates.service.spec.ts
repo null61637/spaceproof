@@ -1,11 +1,13 @@
 import { ConflictException, Logger, NotFoundException } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
+import { AnchoringService } from '../anchoring/anchoring.service';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   ANCHOR_TARGET,
   AnchorLookup,
   AnchorReader,
   AnchorTarget,
+  AnchorTransaction,
 } from './anchor-reader';
 import {
   canonicalizeManifestV2,
@@ -24,6 +26,10 @@ describe('CertificatesService', () => {
     findUnique: jest.fn(),
   };
   const lookup = jest.fn<Promise<AnchorLookup>, [string]>();
+  const transaction = jest.fn<Promise<AnchorTransaction>, [string]>();
+  // The certificate's anchoring record: none unless a test says otherwise.
+  const anchorRow = { findUnique: jest.fn() };
+  const wake = jest.fn();
 
   // A version-1 row, as the database returns it.
   const v1 = {
@@ -89,9 +95,13 @@ describe('CertificatesService', () => {
     const moduleRef = await Test.createTestingModule({
       providers: [
         CertificatesService,
-        { provide: PrismaService, useValue: { certificate } },
-        { provide: AnchorReader, useValue: { lookup } },
+        {
+          provide: PrismaService,
+          useValue: { certificate, anchor: anchorRow },
+        },
+        { provide: AnchorReader, useValue: { lookup, transaction } },
         { provide: ANCHOR_TARGET, useValue: target },
+        { provide: AnchoringService, useValue: { wake } },
       ],
     }).compile();
     return moduleRef.get(CertificatesService);
@@ -209,6 +219,11 @@ describe('CertificatesService', () => {
         ]);
       });
 
+      it('asks for the anchor to be sent, without waiting for it', async () => {
+        await issued();
+        expect(wake).toHaveBeenCalledTimes(1);
+      });
+
       it('issues the same certificate as without a contract', async () => {
         const data = (await issued()) as Data & { anchor?: unknown };
         const { anchor, ...withoutAnchor } = data;
@@ -319,8 +334,11 @@ describe('CertificatesService', () => {
           receivedSizeBytes: 1048576,
         },
         anchoredAt: null,
+        anchor: null,
       });
       expect(lookup).toHaveBeenCalledWith(v2.contentHash);
+      // Without a configured contract the anchoring table is not even read.
+      expect(anchorRow.findUnique).not.toHaveBeenCalled();
     });
 
     it('uses the unconfigured reader by default', async () => {
@@ -333,7 +351,9 @@ describe('CertificatesService', () => {
         imports: [CertificatesModule],
       })
         .useMocker((token) =>
-          token === PrismaService ? { certificate } : undefined,
+          token === PrismaService
+            ? { certificate, anchor: anchorRow }
+            : undefined,
         )
         .compile()
         .finally(() => Object.assign(process.env, inherited));
@@ -462,6 +482,270 @@ describe('CertificatesService', () => {
       );
     });
 
+    // F6.6: the certificate, SpaceProof's anchoring record and the chain,
+    // checked against each other. The chain is asked every time.
+    describe('with an anchoring record', () => {
+      const target: AnchorTarget = {
+        chainId: 43113,
+        contractAddress: '0xb5cA7811682676e0B7a8fc568B28dbf6f841c8CF',
+      };
+      const TX = `0x${'ab'.repeat(32)}`;
+      const onChain = new Date('2026-11-13T12:18:25.000Z');
+      const mined = (
+        overrides: Partial<Extract<AnchorTransaction, { state: 'MINED' }>> = {},
+      ): AnchorTransaction => ({
+        state: 'MINED',
+        success: true,
+        to: target.contractAddress,
+        blockNumber: 61003076n,
+        confirmations: 12,
+        anchored: [{ contentHash: v2.contentHash, anchoredAt: onChain }],
+        ...overrides,
+      });
+      const record = (overrides: Record<string, unknown> = {}) => ({
+        id: 'a',
+        certificateId: v2.id,
+        chainId: 43113,
+        contractAddress: target.contractAddress,
+        status: 'CONFIRMED',
+        txHash: TX,
+        blockNumber: 61003076n,
+        anchoredAt: onChain,
+        attempts: 1,
+        lastError: null,
+        ...overrides,
+      });
+
+      beforeEach(async () => {
+        service = await serviceWith(target);
+        certificate.findUnique.mockResolvedValue(v2);
+        lookup.mockResolvedValue({ state: 'ANCHORED', anchoredAt: onChain });
+        transaction.mockResolvedValue(mined());
+      });
+
+      const verified = (row: unknown) => {
+        anchorRow.findUnique.mockResolvedValue(row);
+        return service.verify(v2.id);
+      };
+
+      it('is valid when certificate, record, transaction and chain all agree', async () => {
+        await expect(verified(record())).resolves.toMatchObject({
+          status: 'VALID',
+          reason: null,
+          checks: { record: 'MATCH', anchor: 'ANCHORED' },
+          anchoredAt: onChain,
+          anchor: {
+            status: 'CONFIRMED',
+            txHash: TX,
+            chainId: 43113,
+            contractAddress: target.contractAddress,
+          },
+        });
+        expect(anchorRow.findUnique).toHaveBeenCalledWith({
+          where: { certificateId: v2.id },
+        });
+        expect(lookup).toHaveBeenCalledWith(v2.contentHash);
+        expect(transaction).toHaveBeenCalledWith(TX);
+      });
+
+      it('is valid for a certificate without a record (issued before anchoring) that is on chain', async () => {
+        await expect(verified(null)).resolves.toMatchObject({
+          status: 'VALID',
+          anchor: null,
+        });
+        expect(transaction).not.toHaveBeenCalled();
+      });
+
+      it('is valid for a record confirmed without a transaction, when the dates agree', async () => {
+        await expect(
+          verified(record({ txHash: null, blockNumber: null })),
+        ).resolves.toMatchObject({ status: 'VALID' });
+        expect(transaction).not.toHaveBeenCalled();
+      });
+
+      it.each(['PENDING', 'SUBMITTED', 'FAILED'])(
+        'is valid when the chain has the hash although the record still says %s',
+        async (status) => {
+          await expect(
+            verified(record({ status, anchoredAt: null })),
+          ).resolves.toMatchObject({ status: 'VALID', anchor: { status } });
+        },
+      );
+
+      it.each<[string, Record<string, unknown>, string]>([
+        [
+          'PENDING',
+          { status: 'PENDING', txHash: null, anchoredAt: null },
+          'PENDING',
+        ],
+        [
+          'SUBMITTED, with no receipt yet',
+          { status: 'SUBMITTED', anchoredAt: null },
+          'SUBMITTED',
+        ],
+        ['FAILED', { status: 'FAILED', anchoredAt: null }, 'FAILED'],
+      ])(
+        'is pending, never valid, when the record is %s and the chain does not have the hash',
+        async (_label, overrides, status) => {
+          lookup.mockResolvedValue({ state: 'NOT_ANCHORED' });
+          await expect(verified(record(overrides))).resolves.toMatchObject({
+            status: 'PENDING',
+            reason: 'NOT_ANCHORED',
+            anchoredAt: null,
+            anchor: { status },
+          });
+        },
+      );
+
+      it('is invalid when the record says CONFIRMED and the chain does not have the hash', async () => {
+        lookup.mockResolvedValue({ state: 'NOT_ANCHORED' });
+        await expect(verified(record())).resolves.toMatchObject({
+          status: 'INVALID',
+          reason: 'NOT_ANCHORED',
+          checks: { anchor: 'NOT_ANCHORED' },
+          anchoredAt: null,
+        });
+      });
+
+      it.each<[string, () => void]>([
+        [
+          'the recorded transaction reverted',
+          () =>
+            transaction.mockResolvedValue(
+              mined({ success: false, anchored: [] }),
+            ),
+        ],
+        [
+          'the recorded transaction went to another contract',
+          () =>
+            transaction.mockResolvedValue(
+              mined({
+                to: '0x0000000000000000000000000000000000000001',
+                anchored: [],
+              }),
+            ),
+        ],
+        [
+          'the recorded transaction anchored another hash',
+          () =>
+            transaction.mockResolvedValue(
+              mined({
+                anchored: [
+                  { contentHash: 'f'.repeat(64), anchoredAt: onChain },
+                ],
+              }),
+            ),
+        ],
+        [
+          'the recorded transaction emitted no Anchored event',
+          () => transaction.mockResolvedValue(mined({ anchored: [] })),
+        ],
+        [
+          'the chain does not know the recorded transaction',
+          () => transaction.mockResolvedValue({ state: 'UNKNOWN' }),
+        ],
+        [
+          'the recorded transaction is not mined',
+          () => transaction.mockResolvedValue({ state: 'PENDING' }),
+        ],
+        [
+          'the transaction anchored the hash at another time than the contract stores',
+          () =>
+            transaction.mockResolvedValue(
+              mined({
+                anchored: [
+                  { contentHash: v2.contentHash, anchoredAt: new Date(0) },
+                ],
+              }),
+            ),
+        ],
+      ])(
+        'is invalid, although the hash is on chain, when %s',
+        async (_l, arrange) => {
+          arrange();
+          await expect(verified(record())).resolves.toMatchObject({
+            status: 'INVALID',
+            reason: 'ANCHOR_RECORD_MISMATCH',
+            anchoredAt: null,
+          });
+        },
+      );
+
+      it('is invalid when the recorded date is not the one the contract stores', async () => {
+        await expect(
+          verified(record({ anchoredAt: new Date('2026-01-01T00:00:00Z') })),
+        ).resolves.toMatchObject({
+          status: 'INVALID',
+          reason: 'ANCHOR_RECORD_MISMATCH',
+        });
+      });
+
+      it('is unverifiable, not invalid, when the record names another contract', async () => {
+        await expect(
+          verified(
+            record({
+              contractAddress: '0x00000000000000000000000000000000000000Aa',
+            }),
+          ),
+        ).resolves.toMatchObject({
+          status: 'UNVERIFIABLE',
+          reason: 'ANCHOR_TARGET_MISMATCH',
+          anchoredAt: null,
+        });
+        // The configured contract says nothing about another one.
+        expect(lookup).not.toHaveBeenCalled();
+      });
+
+      it('is unverifiable, not invalid, when the record names another chain', async () => {
+        await expect(
+          verified(record({ chainId: 43114 })),
+        ).resolves.toMatchObject({
+          status: 'UNVERIFIABLE',
+          reason: 'ANCHOR_TARGET_MISMATCH',
+        });
+      });
+
+      it.each<[string, () => void]>([
+        ['the hash', () => lookup.mockRejectedValue(new Error('RPC down'))],
+        [
+          'the recorded transaction',
+          () => transaction.mockRejectedValue(new Error('RPC down')),
+        ],
+      ])(
+        'is unverifiable, never valid or invalid, when the chain cannot be asked about %s',
+        async (_label, arrange) => {
+          jest
+            .spyOn(Logger.prototype, 'warn')
+            .mockImplementation(() => undefined);
+          arrange();
+          await expect(verified(record())).resolves.toMatchObject({
+            status: 'UNVERIFIABLE',
+            reason: 'ANCHOR_UNAVAILABLE',
+            checks: { anchor: 'UNAVAILABLE' },
+            anchoredAt: null,
+          });
+        },
+      );
+
+      it('never changes the record, whatever it finds', async () => {
+        transaction.mockResolvedValue(mined({ success: false }));
+        await verified(record());
+        expect(Object.keys(anchorRow)).toEqual(['findUnique']);
+        expect(certificate.create).not.toHaveBeenCalled();
+      });
+
+      it('reports an altered file or record before looking at the anchoring', async () => {
+        anchorRow.findUnique.mockResolvedValue(record());
+        certificate.findUnique.mockResolvedValue({ ...v2, satellite: 'X' });
+        await expect(service.verify(v2.id)).resolves.toMatchObject({
+          status: 'INVALID',
+          reason: 'RECORD_MISMATCH',
+          checks: { anchor: 'NOT_CHECKED' },
+        });
+        expect(lookup).not.toHaveBeenCalled();
+      });
+    });
+
     describe('without a file', () => {
       it('verifies an intact version-1 certificate with its own function', async () => {
         certificate.findUnique.mockResolvedValue(v1);
@@ -478,6 +762,7 @@ describe('CertificatesService', () => {
           computedHash: v1.contentHash,
           file: null,
           anchoredAt: null,
+          anchor: null,
         });
       });
 
