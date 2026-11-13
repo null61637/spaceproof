@@ -1,6 +1,6 @@
 # SpaceProof — Estado y pendientes
 
-Última actualización: 2026-11-13, con **F5 desplegada, verificada y validada en Avalanche Fuji** (secciones 9 y 10). Fases F0 a F4 terminadas y fusionadas en `main` (PR #3, CI en verde): se puede emitir el certificado de un archivo y verificarlo, por API y desde la interfaz. El contrato `SpaceProofAnchor` está en Fuji en `0xb5cA7811682676e0B7a8fc568B28dbf6f841c8CF`, con el código fuente verificado y dos anclajes de prueba. **El backend ya lee la cadena en vivo** cuando se configuran `ANCHOR_RPC_URL` y `ANCHOR_CONTRACT_ADDRESS`: un certificado cuyo hash está en el contrato verifica como «válido» (comprobado contra Fuji con un certificado sintético). **El backend todavía no ancla por sí mismo** (F6): hoy un certificado nuevo queda en «pendiente» —o en «no verificable en Avalanche» si las variables no están configuradas— hasta que alguien lo ancle a mano. El trabajo de F5 está en la rama `feat/f5-avalanche-contract`, fusionada en `main` (PR #4, commit de fusión `db43fef`, CI en verde): **F5 está cerrada.** F6.1 a F6.3 (tabla `Anchor`, firmante, certificado y anclaje `PENDING` en una transacción) están fusionadas en `main` (PR #5, `e4553b5`). F6.4 a F6.6 (envío y confirmación, recuperación tras reinicios y verificación integral) están **implementadas y probadas solo contra una cadena simulada**, en la rama `feat/f6-anchoring`: **todavía no se envió ningún anclaje real desde el backend**, y la prueba en Fuji requiere autorización expresa. Detalle en la sección 11.10.
+Última actualización: 2026-11-13, con **F5 desplegada, verificada y validada en Avalanche Fuji** (secciones 9 y 10). Fases F0 a F4 terminadas y fusionadas en `main` (PR #3, CI en verde): se puede emitir el certificado de un archivo y verificarlo, por API y desde la interfaz. El contrato `SpaceProofAnchor` está en Fuji en `0xb5cA7811682676e0B7a8fc568B28dbf6f841c8CF`, con el código fuente verificado y dos anclajes de prueba. **El backend ya lee la cadena en vivo** cuando se configuran `ANCHOR_RPC_URL` y `ANCHOR_CONTRACT_ADDRESS`: un certificado cuyo hash está en el contrato verifica como «válido» (comprobado contra Fuji con un certificado sintético). **El backend todavía no ancla por sí mismo** (F6): hoy un certificado nuevo queda en «pendiente» —o en «no verificable en Avalanche» si las variables no están configuradas— hasta que alguien lo ancle a mano. El trabajo de F5 está en la rama `feat/f5-avalanche-contract`, fusionada en `main` (PR #4, commit de fusión `db43fef`, CI en verde): **F5 está cerrada.** F6.1 a F6.3 (tabla `Anchor`, firmante, certificado y anclaje `PENDING` en una transacción) están fusionadas en `main` (PR #5, `e4553b5`). F6.4 a F6.6 (envío y confirmación, recuperación tras reinicios y verificación integral) también están en `main` (PR #6, `a705060`), **probadas solo contra una cadena simulada: todavía no se envió ningún anclaje real desde el backend**, y la prueba en Fuji requiere autorización expresa. La interfaz (F7) muestra el estado del anclaje y todos los resultados de la verificación; hay README, guion de demo y archivos de ejemplo reproducibles (F9). Detalle en las secciones 11.10 y 11.11. El [README](../README.md) operativo anterior ahora es [OPERACION.md](OPERACION.md).
 
 Este documento es la referencia central: qué está hecho y comprobado, qué se decidió, qué riesgos se conocen, qué falta para terminar el MVP y **qué quedó fuera** (sección 7). Detalle operativo en el [README](../README.md) y en [backups.md](backups.md).
 
@@ -1179,3 +1179,96 @@ Dos pruebas existentes cambiaron, por un motivo concreto: dos comparaciones exac
 3. Emitir un certificado sintético y observar: `PENDING` → `SUBMITTED` → `CONFIRMED`, la transacción en el explorador, `GET /verify` → `VALID` con `anchor.txHash`.
 4. Matar el backend justo después del envío y reiniciarlo: debe confirmar sin enviar otra transacción (un solo incremento de nonce).
 5. Registrar aquí hashes, nonce antes y después (hoy 3) y gas. Costo esperado: ~45 700 gas por anclaje; saldo actual ~0,4999 AVAX de prueba.
+
+### 11.11 Cierre de F6, F7 (interfaz), F8 (auditoría) y F9 (presentación) — 2026-11-13
+
+Sin transacciones reales (nonce del owner: 3, comprobado al terminar), sin despliegues, sin cambios al contrato, sin tocar la base `spaceproof` ni el servidor de :3001. Rama `feat/f7-f9-mvp`.
+
+#### Cierre de F6
+
+| Punto | Estado | Resultado |
+|---|---|---|
+| PR #6 (F6.4 a F6.6) | RESUELTO | Revisado de nuevo (envío, persistencia, recuperación, concurrencia, confirmación) sin encontrar errores que bloqueen; fusionado en `main`, commit de fusión `a705060`, con los 5 jobs en verde |
+| `verify:certificates` | RESUELTO | `spaceproof_test`: 141 certificados, 136 válidos, 5 inválidos, 0 errores. Los ids inválidos se compararon con las filas de la base que tienen los valores forjados por las pruebas («Forged title», «Audit forged», «Forged», «Forged satellite»): **son exactamente los mismos cinco**, ninguno con fila `Anchor`. Siguen siendo solo los registros alterados a propósito por los e2e (11.2 y 11.9). Desarrollo: 0 certificados, código 0. No se modificó ningún dato |
+| Seguridad del envío automático | RESUELTO, con una corrección | Abajo |
+
+**Auditoría del envío automático.** Con `ANCHOR_PRIVATE_KEY`, el backend envía transacciones sin intervención:
+
+- *Qué filas procesa:* solo las filas `Anchor` en `PENDING` o `SUBMITTED` cuyo `chainId` y `contractAddress` son **exactamente** los configurados, de la base a la que está conectado. Hasta 25 por pasada, una por vez, y como máximo 5 transacciones por anclaje. Nunca `CONFIRMED` ni `FAILED`.
+- *Registros de prueba:* las suites e2e usan direcciones que no son un contrato real, así que sus filas no coinciden con ningún contrato configurado; los e2e eliminan las variables `ANCHOR_*` antes de arrancar la aplicación; las unitarias firman solo contra un RPC falso con una clave pública de desarrollo.
+- *Base equivocada:* el backend enviaría los anclajes abiertos **de ese contrato** que haya en esa base. Si la base no tiene filas de ese contrato, no envía nada. El riesgo real es una base con anclajes acumulados mientras no había clave (decisión aprobada: las filas se crean aunque no haya clave): al configurar la clave se envían todos.
+- *Transacciones inesperadas:* no se encontró un camino que envíe algo distinto del hash de un certificado emitido, ni a otro contrato, ni dos veces el mismo hash con éxito (el contrato lo rechaza).
+- *Producción:* aceptable con dos condiciones: una sola instancia con clave, y revisar las filas abiertas antes de configurar la clave por primera vez.
+- **Corrección aplicada:** al arrancar con clave, el backend ahora **registra una advertencia con el contrato y la cantidad de anclajes abiertos que va a enviar**, antes de enviar nada. No se agregó infraestructura ni un interruptor nuevo: la clave ya es la habilitación explícita.
+
+#### F7 — interfaz
+
+Estado: **implementada**; compila, pasa lint y tipos, y se probó contra un backend real en otro puerto (lectura de Fuji, sin clave).
+
+- **Flujo completo sin herramientas externas:** subir el archivo y los metadatos → certificado con su SHA-256, el hash del manifiesto y el ID → estado del anclaje → verificar un archivo.
+- **Estado del anclaje** (`certificates/[id]/anchor-status.tsx`): consulta `GET …/verify` en vivo, muestra `PENDING`, `SUBMITTED`, `CONFIRMED` o `FAILED`, se actualiza solo cada 4 s mientras está en camino (hasta 5 minutos) y tiene botón «Actualizar». Con transacción, enlace a Snowtrace; siempre, enlace al contrato. Enlace al manifiesto.
+- **Resultado de la verificación** con un veredicto de una palabra: **VÁLIDO**, **INVÁLIDO** o **NO VERIFICABLE**. Reconoce todos los motivos de la API, incluidos `ANCHOR_RECORD_MISMATCH` y `ANCHOR_TARGET_MISMATCH`, y distingue archivo alterado, registro alterado, anclaje inconsistente y blockchain no disponible. «Válido» solo se muestra para `VALID`: `PENDING` y cualquier estado que la interfaz no conozca se muestran como no verificables.
+- **Identidad visual:** un único tema oscuro y sobrio, tipografía Geist, el color solo comunica el resultado (verde, rojo, ámbar), marca propia (`app/icon.svg`), pie con los límites del producto. Sin funcionalidades nuevas fuera del flujo.
+- No se agregaron dependencias. El backend no cambió para F7.
+
+Comprobado: emisión por el proxy de Next (`201`), página del certificado con el panel de anclaje en `PENDING` y el enlace al contrato, y página inicial, con capturas en un navegador sin interfaz a 1280 px.
+
+**No comprobado:** los paneles `CONFIRMED` / VÁLIDO / INVÁLIDO en un navegador (requieren un anclaje real, o interacción que el navegador sin interfaz no permite); el ancho de teléfono (la captura a 390 px no fue concluyente: el navegador sin interfaz no baja de ~500 px); lectores de pantalla. Sigue sin haber pruebas automatizadas del frontend.
+
+#### F8 — auditoría práctica
+
+| Área | Resultado |
+|---|---|
+| Secretos | Solo hay archivos `.env*.example` versionados; los `.env` reales están ignorados; la clave real no aparece en ningún commit de esta rama |
+| Dependencias | `pnpm audit --prod` (backend) y `npm audit --omit=dev` (frontend): 0 vulnerabilidades conocidas |
+| Endpoints y validación | Sin cambios desde F3/F4 (e2e en verde): metadatos validados antes de leer el cuerpo, límite de 200 MB por cabecera y por bytes, firma TIFF, ids como UUID, sin CORS, protección CSRF por tipo de contenido |
+| Errores y logs | Los errores de cadena se registran solo por nombre; `lastError` guarda nombres; sin cuerpos de solicitud (e2e de observabilidad en verde) |
+| SHA-256 y manifiesto | Vectores de la especificación en verde; el anclaje no entra en el manifiesto |
+| Verificación on-chain y RPC caído | Cubierto por unitarias y e2e (11.10): nunca `VALID` sin la cadena |
+| Migraciones | Sin diferencias entre migraciones, esquema y base de pruebas |
+| Frontend ↔ backend | Tipos del frontend al día con la API (campo `anchor`, motivos nuevos) |
+| Docker Compose | `config` válido para producción y desarrollo (solo sintaxis) |
+| CI | `actionlint` sin hallazgos |
+
+Hallazgos **no corregidos**, a propósito:
+
+| Hallazgo | Impacto | Por qué no se corrigió |
+|---|---|---|
+| **`docker-compose.prod.yml` no está adaptado** a los roles de la base ni a las variables `ANCHOR_*` (P1, R2 a R4) | El despliegue de producción no funciona tal como está | Es P1; no se puede probar aquí, y cambiarlo a ciegas es más riesgoso que dejarlo documentado. Bloquea una URL pública, no la demo local |
+| `GET …/verify` no tiene autenticación y cada llamada consulta el RPC (la interfaz la repite cada 4 s mientras hay un anclaje en camino) | Alguien podría generar muchas consultas al RPC público | En producción la aplicación va detrás de la autenticación básica de Caddy; para la demo local es irrelevante |
+| `GET /api/certificates` devuelve todos los certificados, sin paginar | Lento con miles de certificados | Fuera del alcance del MVP |
+| Sin pruebas automatizadas del frontend | Las regresiones de interfaz no se detectan solas | Agregar un framework de pruebas ahora no entra en el tiempo disponible |
+
+No se encontraron vulnerabilidades ni errores que exigieran un cambio de código, aparte de la advertencia de arranque ya descrita.
+
+#### F9 — presentación
+
+- **README nuevo** en la raíz: problema, cómo funciona (con diagrama), qué garantiza y qué no, verificación independiente, contrato en Fuji, arquitectura, tecnologías, ejecución local y estado real. El README anterior, operativo, pasó a [OPERACION.md](OPERACION.md) con sus enlaces corregidos y un aviso sobre producción.
+- **Guion de demo de 2 minutos:** [DEMO.md](DEMO.md), con preparación, metadatos de ejemplo, qué hacer si algo falla y un plan B sin transacciones.
+- **Archivos de demo reproducibles:** `node scripts/demo-files.mjs` genera siempre los mismos dos archivos en `demo/` (ignorado por Git): un TIFF válido de 512×512, **sintético**, y su copia con un bit cambiado. SHA-256 en el guion.
+
+#### Validaciones ejecutadas
+
+| Validación | Resultado |
+|---|---|
+| Backend: ESLint, tipos con pruebas, compilación (directorio aparte) | Sin errores |
+| Backend: unitarias | 299/299 |
+| Backend: e2e (`spaceproof_test`) | 244/244 |
+| Migraciones | Sin diferencias |
+| `verify:certificates` | Como arriba |
+| Frontend: lint, tipos, build | Sin errores. No tiene pruebas |
+| Contrato: build (ABI sin cambios), tipos, pruebas | 12/12 |
+| Docker Compose `config`, `actionlint` | Sin errores |
+| CI de GitHub | En el pull request de esta rama |
+
+#### Qué falta para el MVP
+
+| # | Pendiente | Requiere |
+|---|---|---|
+| 1 | **Prueba real en Fuji**: un certificado llega solo a `CONFIRMED` (pasos en 11.10) | Autorización expresa. Consume nonce y AVAX de prueba |
+| 2 | Aplicar la migración `Anchor` en la base donde se haga la demo (`prisma migrate deploy` en `spaceproof`, o una base aparte) | Autorización |
+| 3 | Capturas o grabación de la demo con una transacción real; ensayo cronometrado | Depende de 1 y 2 |
+| 4 | Ver en un navegador real los paneles `CONFIRMED`, VÁLIDO e INVÁLIDO, y el ancho de teléfono | Depende de 1 |
+| 5 | Despliegue público (P1) | Solo si la entrega exige una URL |
+
+Ramas: `feat/f6-anchoring-send` sigue existiendo, vacía (apunta a `e4553b5`, ya contenido en `main`): es innecesaria y se puede borrar cuando se autorice. El stash de respaldo de F6.1/F6.2 se conserva; su contenido ya está en `main`.
