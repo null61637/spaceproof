@@ -6,12 +6,16 @@ import request from 'supertest';
 import { App } from 'supertest/types';
 import { AppModule } from '../src/app.module';
 import { setupApp } from '../src/app.setup';
-import { computeCertificateHash } from '../src/certificates/certificate-hash';
+import {
+  computeCertificateHash,
+  computeManifestV2Hash,
+} from '../src/certificates/certificate-hash';
 import { connectAs, pgError } from './db';
 import { APP_ROLE, OWNER_ROLE } from './test-env';
 
 const INSUFFICIENT_PRIVILEGE = '42501';
 const RAISE_EXCEPTION = 'P0001';
+const CHECK_VIOLATION = '23514';
 
 // Proves the database itself enforces the integrity rules: the runtime role
 // (spaceproof_app) can only read and insert, and the triggers stop even the
@@ -367,4 +371,179 @@ describe('Database privileges (e2e)', () => {
     });
     expect(result.computedHash).not.toBe(result.storedHash);
   });
+
+  // Certificates of a file (hash version 2). Nothing in the API issues them
+  // yet, so the rows are inserted as the runtime role, like T13.
+  describe('file certificates (hash version 2)', () => {
+    const fileSha256 = 'a'.repeat(64);
+
+    function v2Row(overrides: Record<string, unknown> = {}) {
+      return {
+        id: randomUUID(),
+        title: 'Scene',
+        recipient: 'Ada',
+        createdAt: new Date().toISOString(),
+        hashVersion: 2,
+        fileSha256,
+        fileSizeBytes: 1024,
+        fileName: 'scene.tif',
+        satellite: 'Sentinel-2A',
+        sensor: null,
+        sceneId: null,
+        acquiredAt: '2026-01-01T14:00:51.000Z',
+        ...overrides,
+      } as Record<string, unknown> & { id: string };
+    }
+
+    function insert(row: Record<string, unknown>, contentHash: string) {
+      const columns = [...Object.keys(row), 'contentHash'];
+      return asApp.query(
+        `INSERT INTO "Certificate" (${columns.map((c) => `"${c}"`).join(', ')})
+         VALUES (${columns.map((_, i) => `$${i + 1}`).join(', ')})`,
+        [...Object.values(row), contentHash],
+      );
+    }
+
+    async function insertValid(): Promise<string> {
+      const row = v2Row();
+      await insert(
+        row,
+        computeManifestV2Hash({
+          id: row.id,
+          createdAt: new Date(row.createdAt as string),
+          fileSha256,
+          fileSizeBytes: 1024,
+          title: 'Scene',
+          recipient: 'Ada',
+          satellite: 'Sentinel-2A',
+          sensor: null,
+          sceneId: null,
+          acquiredAt: new Date('2026-01-01T14:00:51.000Z'),
+        }),
+      );
+      return row.id;
+    }
+
+    it('T16: existing-style inserts are version 1 with no file columns', async () => {
+      const id = await createCertificate();
+      const { rows } = await asApp.query(
+        `SELECT "hashVersion", "fileSha256", "fileSizeBytes", "fileName",
+                "satellite", "sensor", "sceneId", "acquiredAt"
+           FROM "Certificate" WHERE id = $1`,
+        [id],
+      );
+      expect(rows).toEqual([
+        {
+          hashVersion: 1,
+          fileSha256: null,
+          fileSizeBytes: null,
+          fileName: null,
+          satellite: null,
+          sensor: null,
+          sceneId: null,
+          acquiredAt: null,
+        },
+      ]);
+      expect((await verify(id)).valid).toBe(true);
+    });
+
+    it('T17: a version-2 certificate verifies against its manifest hash', async () => {
+      const id = await insertValid();
+      const result = await verify(id);
+      expect(result.valid).toBe(true);
+      expect(result.computedHash).toBe(result.storedHash);
+    });
+
+    it('T17: a version-2 certificate with altered metadata is invalid', async () => {
+      const row = v2Row({ satellite: 'Forged' });
+      const contentHash = computeManifestV2Hash({
+        id: row.id,
+        createdAt: new Date(row.createdAt as string),
+        fileSha256,
+        fileSizeBytes: 1024,
+        title: 'Scene',
+        recipient: 'Ada',
+        satellite: 'Sentinel-2A',
+        sensor: null,
+        sceneId: null,
+        acquiredAt: new Date('2026-01-01T14:00:51.000Z'),
+      });
+      await insert(row, contentHash);
+      expect(await verify(row.id)).toMatchObject({
+        valid: false,
+        storedHash: contentHash,
+      });
+    });
+
+    it.each<[string, Record<string, unknown>]>([
+      ['version 2 without a file hash', { fileSha256: null }],
+      ['version 2 without a file size', { fileSizeBytes: null }],
+      ['version 2 without a satellite', { satellite: null }],
+      ['version 2 without an acquisition date', { acquiredAt: null }],
+      ['version 1 carrying a file hash', { hashVersion: 1 }],
+      [
+        'version 1 carrying only a satellite',
+        {
+          hashVersion: 1,
+          fileSha256: null,
+          fileSizeBytes: null,
+          fileName: null,
+          acquiredAt: null,
+        },
+      ],
+      ['an unknown version', { hashVersion: 3 }],
+      ['an uppercase file hash', { fileSha256: 'A'.repeat(64) }],
+      ['a short file hash', { fileSha256: 'abc' }],
+      ['a zero file size', { fileSizeBytes: 0 }],
+    ])('T18: rejects %s', async (_case, overrides) => {
+      const error = await pgError(insert(v2Row(overrides), randomHash()));
+      expect(error.code).toBe(CHECK_VIOLATION);
+    });
+
+    it.each([
+      ['hashVersion', `1`],
+      ['fileSha256', `repeat('b', 64)`],
+      ['fileSizeBytes', `2048`],
+      ['fileName', `'other.tif'`],
+      ['satellite', `'Landsat 9'`],
+      ['sensor', `'MSI'`],
+      ['sceneId', `'X'`],
+      ['acquiredAt', `'2000-01-01'`],
+    ])(
+      'T19: rejects an UPDATE of %s, even by the owner',
+      async (column, value) => {
+        const id = await insertValid();
+        const error = await pgError(
+          asOwner.query(
+            `UPDATE "Certificate" SET "${column}" = ${value} WHERE id = $1`,
+            [id],
+          ),
+        );
+        expect(error.code).toBe(RAISE_EXCEPTION);
+        expect(error.message).toMatch(/is immutable/);
+        expect((await verify(id)).valid).toBe(true);
+      },
+    );
+
+    it('T20: no column can hold file bytes', async () => {
+      const { rows } = await asOwner.query(
+        `SELECT table_name, column_name, data_type
+           FROM information_schema.columns
+          WHERE table_schema = 'public'
+            AND data_type IN ('bytea', 'oid')`,
+      );
+      expect(rows).toEqual([]);
+      const tables = await asOwner.query(
+        `SELECT tablename FROM pg_tables
+          WHERE schemaname = 'public' ORDER BY 1`,
+      );
+      expect(tables.rows).toEqual([
+        { tablename: 'Certificate' },
+        { tablename: '_prisma_migrations' },
+      ]);
+    });
+  });
 });
+
+const randomHash = (): string =>
+  randomUUID().replace(/-/g, '').repeat(2).slice(0, 64);
