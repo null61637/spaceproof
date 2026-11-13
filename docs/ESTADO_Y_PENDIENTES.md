@@ -1,6 +1,6 @@
 # SpaceProof — Estado y pendientes
 
-Última actualización: 2026-11-13, con **F5 desplegada, verificada y validada en Avalanche Fuji** (secciones 9 y 10). Fases F0 a F4 terminadas y fusionadas en `main` (PR #3, CI en verde): se puede emitir el certificado de un archivo y verificarlo, por API y desde la interfaz. El contrato `SpaceProofAnchor` está en Fuji en `0xb5cA7811682676e0B7a8fc568B28dbf6f841c8CF`, con el código fuente verificado y dos anclajes de prueba. **El backend ya lee la cadena en vivo** cuando se configuran `ANCHOR_RPC_URL` y `ANCHOR_CONTRACT_ADDRESS`: un certificado cuyo hash está en el contrato verifica como «válido» (comprobado contra Fuji con un certificado sintético). **El backend todavía no ancla por sí mismo** (F6): hoy un certificado nuevo queda en «pendiente» —o en «no verificable en Avalanche» si las variables no están configuradas— hasta que alguien lo ancle a mano. El trabajo de F5 está en la rama `feat/f5-avalanche-contract`, fusionada en `main` (PR #4, commit de fusión `db43fef`, CI en verde): **F5 está cerrada.** De F6 están hechas en la rama local `feat/f6-anchoring`, sin push ni CI de GitHub: la migración `Anchor` (F6.1), el firmante con su validación de arranque (F6.2) y la creación del certificado junto con su anclaje `PENDING` (F6.3). **El backend sigue sin enviar anclajes** (F6.4). Detalle en la sección 11.
+Última actualización: 2026-11-13, con **F5 desplegada, verificada y validada en Avalanche Fuji** (secciones 9 y 10). Fases F0 a F4 terminadas y fusionadas en `main` (PR #3, CI en verde): se puede emitir el certificado de un archivo y verificarlo, por API y desde la interfaz. El contrato `SpaceProofAnchor` está en Fuji en `0xb5cA7811682676e0B7a8fc568B28dbf6f841c8CF`, con el código fuente verificado y dos anclajes de prueba. **El backend ya lee la cadena en vivo** cuando se configuran `ANCHOR_RPC_URL` y `ANCHOR_CONTRACT_ADDRESS`: un certificado cuyo hash está en el contrato verifica como «válido» (comprobado contra Fuji con un certificado sintético). **El backend todavía no ancla por sí mismo** (F6): hoy un certificado nuevo queda en «pendiente» —o en «no verificable en Avalanche» si las variables no están configuradas— hasta que alguien lo ancle a mano. El trabajo de F5 está en la rama `feat/f5-avalanche-contract`, fusionada en `main` (PR #4, commit de fusión `db43fef`, CI en verde): **F5 está cerrada.** De F6 están hechas en la rama `feat/f6-anchoring`, publicadas en el pull request #5 y todavía sin fusionar: la migración `Anchor` (F6.1), el firmante con su validación de arranque (F6.2) y la creación del certificado junto con su anclaje `PENDING` (F6.3). **El backend sigue sin enviar anclajes** (F6.4). Detalle en la sección 11.
 
 Este documento es la referencia central: qué está hecho y comprobado, qué se decidió, qué riesgos se conocen, qué falta para terminar el MVP y **qué quedó fuera** (sección 7). Detalle operativo en el [README](../README.md) y en [backups.md](backups.md).
 
@@ -1019,3 +1019,16 @@ Pendiente para F6.4 (no implementado; requisitos):
 6. Revert o tiempo agotado → releer la cadena, sumar un intento; al quinto, `FAILED` con el nombre del error.
 7. Dispararlo después de responder la emisión, sin bloquearla; el barrido tras reinicios es F6.5.
 8. Pruebas unitarias con cadena falsa; ninguna prueba automática envía transacciones. La prueba manual contra Fuji consume AVAX de prueba y nonce: necesita autorización expresa.
+
+### 11.8 Publicación de F6.1 a F6.3 (2026-11-13)
+
+| Paso | Estado | Detalle |
+|---|---|---|
+| Diagnóstico de Git | RESUELTO | Rama `feat/f6-anchoring`, árbol de trabajo limpio; commits `18d331b` y `3908334`, los dos sobre `origin/main` (`db43fef`); `stash@{0}` de respaldo presente |
+| Revisión antes de publicar | RESUELTO | 16 archivos, todos de F6.1 a F6.3. Ningún `.env` real (están ignorados; solo cambia `backend/.env.example`). La clave real no aparece en los commits. El único valor de 32 bytes agregado es la clave pública de desarrollo n.º 0 de Hardhat, en una prueba y documentada como tal. Sin cambios de dependencias ni de lockfiles. Antes del push: ESLint, tipos con pruebas, 237/237 unitarias y 203/203 e2e |
+| Push y pull request | RESUELTO | PR #5 hacia `main`: https://github.com/null61637/spaceproof/pull/5 |
+| CI de GitHub | EN PROGRESO | Resultado en el propio PR; este documento se actualizará al implementar F6.4 |
+| Fusión | PENDIENTE | Requiere la aprobación del responsable del proyecto. No se fusiona automáticamente |
+| F6.4 | PENDIENTE | Empieza después de la fusión. Solo con pruebas simuladas: ninguna transacción real |
+
+Sin transacciones (nonce del owner: 3). La base de desarrollo `spaceproof` sigue sin la migración `Anchor` y no se tocó. El stash de respaldo se conserva.
