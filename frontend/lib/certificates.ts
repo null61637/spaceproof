@@ -40,6 +40,8 @@ export type Verification = {
     | "FILE_MISMATCH"
     | "RECORD_MISMATCH"
     | "NOT_ANCHORED"
+    | "ANCHOR_RECORD_MISMATCH"
+    | "ANCHOR_TARGET_MISMATCH"
     | "ANCHOR_NOT_CONFIGURED"
     | "ANCHOR_UNAVAILABLE"
     | null;
@@ -62,7 +64,42 @@ export type Verification = {
     receivedSizeBytes: number;
   } | null;
   anchoredAt: string | null;
+  // SpaceProof's own anchoring record: informative only. What makes a result
+  // VALID is the chain, never this.
+  anchor?: {
+    status: "PENDING" | "SUBMITTED" | "CONFIRMED" | "FAILED";
+    txHash: string | null;
+    chainId: number;
+    contractAddress: string;
+  } | null;
 };
+
+// Avalanche Fuji (testnet) is the only chain SpaceProof anchors on.
+const EXPLORERS: Record<number, string> = {
+  43113: "https://testnet.snowtrace.io",
+};
+
+/** Link to a transaction in the chain's explorer, or null if unknown. */
+export function explorerTxUrl(
+  chainId: number,
+  txHash: string | null,
+): string | null {
+  const base = EXPLORERS[chainId];
+  return base && txHash && /^0x[0-9a-f]{64}$/.test(txHash)
+    ? `${base}/tx/${txHash}`
+    : null;
+}
+
+/** Link to a contract in the chain's explorer, or null if unknown. */
+export function explorerAddressUrl(
+  chainId: number,
+  address: string,
+): string | null {
+  const base = EXPLORERS[chainId];
+  return base && /^0x[0-9a-fA-F]{40}$/.test(address)
+    ? `${base}/address/${address}`
+    : null;
+}
 
 // NestJS errors carry `message` as a string or, for validation, a string[].
 export function errorMessage(body: unknown, status: number): string {

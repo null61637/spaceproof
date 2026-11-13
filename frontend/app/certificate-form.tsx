@@ -10,8 +10,7 @@ import {
 import { UploadError, fileProblem, uploadFile } from "@/lib/upload";
 import { UploadProgress } from "./upload-progress";
 
-const inputClass =
-  "w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm outline-none focus:border-zinc-900 focus:ring-2 focus:ring-zinc-900/10 dark:border-zinc-700 dark:bg-zinc-900 dark:focus:border-zinc-100";
+const inputClass = "input";
 
 // The required texts of the manifest, with the label used in messages.
 const REQUIRED_TEXTS = [
@@ -105,7 +104,7 @@ export function CertificateForm() {
           accept=".tif,.tiff,image/tiff"
           required
           disabled={sending}
-          className="w-full text-sm file:mr-3 file:rounded-md file:border-0 file:bg-zinc-100 file:px-3 file:py-2 file:text-sm file:font-medium hover:file:bg-zinc-200 dark:file:bg-zinc-800 dark:hover:file:bg-zinc-700"
+          className="file-input"
         />
       </Field>
 
@@ -180,7 +179,7 @@ export function CertificateForm() {
         />
       </Field>
 
-      <p className="rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2 text-xs text-zinc-600 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300">
+      <p className="hint rounded-lg border border-line px-3 py-2.5">
         SpaceProof no guarda tu archivo: solo calcula su huella (SHA-256).
         Conservá el original para poder verificarlo después. Los metadatos son
         los que vos declarás: no se extraen del archivo ni se contrastan.
@@ -189,7 +188,7 @@ export function CertificateForm() {
       {error && (
         <p
           role="alert"
-          className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-200"
+          className="alert-error"
         >
           {error}
         </p>
@@ -201,7 +200,7 @@ export function CertificateForm() {
         <button
           type="submit"
           disabled={sending}
-          className="rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-zinc-700 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300"
+          className="btn"
         >
           {sending ? "Certificando…" : "Certificar archivo"}
         </button>
@@ -209,7 +208,7 @@ export function CertificateForm() {
           <button
             type="button"
             onClick={() => upload.current?.abort()}
-            className="rounded-md border border-zinc-300 px-4 py-2 text-sm font-medium transition-colors hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-900"
+            className="btn-secondary"
           >
             Cancelar
           </button>
@@ -232,12 +231,12 @@ function Field({
 }) {
   return (
     <div className="flex flex-col gap-1.5">
-      <label htmlFor={htmlFor} className="text-sm font-medium">
+      <label htmlFor={htmlFor} className="label">
         {label}
       </label>
       {children}
       {hint && (
-        <p className="text-xs text-zinc-500 dark:text-zinc-400">{hint}</p>
+        <p className="hint">{hint}</p>
       )}
     </div>
   );
