@@ -11,6 +11,7 @@ import {
   computeManifestV2Hash,
 } from '../src/certificates/certificate-hash';
 import { connectAs, pgError } from './db';
+import { insertV1 } from './files';
 import { APP_ROLE, OWNER_ROLE } from './test-env';
 
 const INSUFFICIENT_PRIVILEGE = '42501';
@@ -42,12 +43,10 @@ describe('Database privileges (e2e)', () => {
     await app.close();
   });
 
+  // A version-1 certificate, inserted as the runtime role: since hash version
+  // 2 the API only issues certificates of a file.
   async function createCertificate(): Promise<string> {
-    const res = await request(app.getHttpServer())
-      .post('/api/certificates')
-      .send({ title: 'Privileges', recipient: 'Ada' })
-      .expect(201);
-    return (res.body as { id: string }).id;
+    return (await insertV1(asApp, 'Privileges')).id;
   }
 
   async function verify(id: string) {
@@ -56,6 +55,8 @@ describe('Database privileges (e2e)', () => {
       .expect(200);
     return res.body as {
       valid: boolean;
+      status: string;
+      reason: string | null;
       storedHash: string;
       computedHash: string;
     };
@@ -359,8 +360,10 @@ describe('Database privileges (e2e)', () => {
     );
 
     const result = await verify(id);
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       valid: false,
+      status: 'INVALID',
+      reason: 'RECORD_MISMATCH',
       storedHash: contentHash,
       computedHash: computeCertificateHash({
         id,
@@ -372,8 +375,8 @@ describe('Database privileges (e2e)', () => {
     expect(result.computedHash).not.toBe(result.storedHash);
   });
 
-  // Certificates of a file (hash version 2). Nothing in the API issues them
-  // yet, so the rows are inserted as the runtime role, like T13.
+  // Certificates of a file (hash version 2). Rows are inserted as the runtime
+  // role, like T13, to store shapes the API would never issue.
   describe('file certificates (hash version 2)', () => {
     const fileSha256 = 'a'.repeat(64);
 

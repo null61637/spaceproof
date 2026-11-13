@@ -1,6 +1,6 @@
 # SpaceProof — Estado y pendientes
 
-Última actualización: 2026-11-13, al cierre de **F2**. Fases F0 (fusión en `main`), F1 (manifiesto v2) y F2 (esquema y migración) terminadas y verificadas en local. La sección 1 describe lo implementado; de las secciones 4 y 5, **F3 en adelante sigue sin implementar**: todavía no se puede emitir un certificado de archivo ni existe integración con Avalanche.
+Última actualización: 2026-11-13, al cierre de **F3 y F4**, de su auditoría y de la validación final previa a la integración (sección 8). Fases F0 a F4 terminadas y verificadas en local: ya se puede emitir el certificado de un archivo y verificarlo, por API y desde la interfaz. **F5 en adelante sigue sin implementar: no existe integración con Avalanche**, y por eso ninguna verificación devuelve «válido»: el mejor resultado posible hoy es «coincide con el registro de SpaceProof; no verificable en Avalanche». El trabajo de F3 y F4 está en la rama `feat/f3-f4-certification`, pendiente de fusión en `main`.
 
 Este documento es la referencia central: qué está hecho y comprobado, qué se decidió, qué riesgos se conocen, qué falta para terminar el MVP y **qué quedó fuera** (sección 7). Detalle operativo en el [README](../README.md) y en [backups.md](backups.md).
 
@@ -18,7 +18,15 @@ Estados usados: **CRÍTICO** (bloquea el funcionamiento o la integridad), **IMPO
 
 | Funcionalidad | Evidencia |
 |---|---|
-| Crear, listar y consultar certificados (API y UI) | e2e `certificates.e2e-spec.ts`; prueba manual de fase 1 por HTTP (sin navegador) |
+| Listar y consultar certificados (API y UI) | e2e `certificates.e2e-spec.ts` |
+| **Emitir el certificado de un archivo** (`POST /api/certificates`): cuerpo crudo en flujo, SHA-256 en el servidor, metadatos validados antes de leer el cuerpo, firma TIFF, límite de 200 MB por `Content-Length` y por bytes recibidos, un único `INSERT` al terminar. Contrato en [API_EMISION_VERIFICACION.md](API_EMISION_VERIFICACION.md) | Unit `file-upload.spec.ts`, `metadata-header.spec.ts`, `certificates.service.spec.ts`; e2e `certificates.e2e-spec.ts` (incluye 200 MB reales aceptados y 200 MB + 1 byte rechazados) |
+| **Verificar un archivo** (`POST /api/certificates/:id/verify-file`): original → coincide; un bit cambiado, un byte de más o de menos, otro archivo → `FILE_MISMATCH`; registro inconsistente → `RECORD_MISMATCH` | Unit y e2e, ídem |
+| Cargas rechazadas o interrumpidas no dejan ninguna fila | e2e: metadatos inválidos, sin firma TIFF, vacío, demasiado grande, conexión cortada (con y sin `Content-Length`) |
+| El archivo no se guarda: ni columna binaria, ni escritura a disco, ni acumulación en memoria | e2e (esquema sin `bytea`/`oid`, fila < 1 KB, ningún archivo abierto para escritura durante emisión y verificación, RSS estable con 200 MB) |
+| Sin integración de cadena o con error de RPC el resultado es `UNVERIFIABLE`, nunca `VALID` | Unit y e2e con un lector de anclaje falso (override de proveedor de Nest) |
+| `GET /api/certificates/:id/manifest` devuelve el texto exacto cuyo SHA-256 es el hash del certificado | Unit (vector A de la especificación) y e2e |
+| Certificados v1: se listan, consultan y verifican igual; `verify` conserva `valid` | e2e `certificates.e2e-spec.ts` («version-1 certificates»), `db-privileges` |
+| Los logs no contienen metadatos, nombre de archivo ni el valor de la cabecera | e2e `observability.e2e-spec.ts` (emisión correcta, rechazos y errores de base) |
 | Hash SHA-256 canónico v1 (`id`, `title`, `recipient`, `createdAt`; NFC) calculado solo en el servidor | Unit `certificate-hash.spec.ts` (vector conocido calculado con `sha256sum`); e2e rechaza `contentHash`/`id`/`txHash` enviados por el cliente |
 | Manifiesto v2 (archivo + metadatos) y selección de la función de hash por `hashVersion`; especificación en [manifiesto-v2.md](manifiesto-v2.md) | Unit `certificate-hash.spec.ts`: tres vectores calculados fuera del código (`sha256sum` y `hashlib` sobre el texto de la especificación), determinismo (NFC/NFD, orden de entrada, husos horarios), sensibilidad a cada uno de los once valores, rechazo de valores sin forma canónica, y el vector v1 sin cambios |
 | Esquema para certificados de archivo: `hashVersion`, hash, tamaño y nombre del archivo, metadatos; `CHECK` de forma por versión; inmutabilidad extendida a las columnas nuevas; ninguna columna binaria ni tabla de archivos | e2e `db-privileges.e2e-spec.ts` T16–T20 |
@@ -31,7 +39,7 @@ Estados usados: **CRÍTICO** (bloquea el funcionamiento o la integridad), **IMPO
 | Sin acceso de `PUBLIC` a las bases; app sin `CONNECT` a `postgres`, `template1`, shadow; funciones sin `EXECUTE` público | e2e T14, T15 |
 | Bootstrap idempotente (`db/init/10-roles.sh`) en volumen existente y en volumen nuevo (`initdb` de la imagen oficial) | Ejecutado 3+ veces en cada caso con estado idéntico; 75/75 e2e en servidor nuevo |
 | Base de tests aislada y reconstruida en cada ejecución; guard contra otra base, host, rol o parámetros `?host=`/`?user=` | e2e `test-env.e2e-spec.ts`; ejecución real con `?host=` abortada antes de conectar |
-| Protección CSRF de la API: escrituras solo `application/json` (415 en otro caso), sin CORS | e2e `csrf.e2e-spec.ts`; la vulnerabilidad se reprodujo antes de corregirla (201 con formulario) |
+| Protección CSRF de la API: `image/tiff` en las dos rutas de archivo y `application/json` en cualquier otra escritura (415 en otro caso), sin CORS | e2e `csrf.e2e-spec.ts`; la vulnerabilidad se reprodujo antes de corregirla (201 con formulario) |
 | Healthchecks `/api/health/live` y `/api/health/ready` (`SELECT 1`, límite 2 s) | Unit `health.controller.spec.ts`; e2e `observability.e2e-spec.ts` |
 | Logs de errores con `requestId`, código Prisma y SQLSTATE, sin cuerpos de solicitud | e2e `observability.e2e-spec.ts` (comprueba que no aparecen datos personales) |
 | Verificación masiva de solo lectura (`pnpm verify:certificates`) | Unit y e2e `certificate-audit`; mismo resultado en origen y copia restaurada |
@@ -39,12 +47,14 @@ Estados usados: **CRÍTICO** (bloquea el funcionamiento o la integridad), **IMPO
 | Migraciones sincronizadas con el schema | `prisma migrate status` y `migrate diff` (contra la base y contra la shadow) sin diferencias, en dev y en servidor nuevo |
 | Lint y build de backend y frontend; build del frontend sin backend | Ejecutados localmente |
 
-Últimos resultados (cierre de F2): **63/63 unitarios** y **97/97 e2e**, en la base de tests del servidor de desarrollo y en un servidor PostgreSQL nuevo (bootstrap de roles y las 6 migraciones desde cero). Lint y build del backend sin errores. La base de desarrollo quedó migrada in-place (`migrate status` y `migrate diff` sin diferencias).
+Últimos resultados (validación final de F3 y F4): **179/179 unitarios** y **169/169 e2e** del backend, y lint y build de backend y frontend sin errores, **en dos entornos**: el de desarrollo (Windows, base `spaceproof_test`) y una reproducción local de los jobs del CI en contenedores Linux (Node 22, pnpm 10.27.0, PostgreSQL 17 con volumen nuevo: bootstrap en `initdb` y repetido, las 6 migraciones desde cero, sin drift). No hubo migraciones nuevas. El CI de GitHub Actions corre sobre el pull request de `feat/f3-f4-certification`; su resultado no figura en este documento, que se escribió antes. Detalle en la sección 8.
 
 ### Comprobado solo manualmente
 
-- **Server Actions frente a otro `Origin`**: Next.js abortó la acción con `Origin` ajeno y la ejecutó con el propio (probado con el formulario real y datos vacíos). No hay prueba automatizada.
-- **Proxy `/api/*` del frontend**: probado con `curl` (415 para formularios, 400 por validación con JSON vacío).
+- **Interfaz en un navegador real** (Edge sin interfaz gráfica, manejado por un script que no forma parte del repositorio): validación de campos, firma TIFF y extensión antes de enviar; progreso y cancelación con un archivo de 120 MB; emisión y redirección al certificado; verificación del original (panel ámbar «No verificable en Avalanche», nunca verde), de una copia con un bit cambiado y de otro archivo (panel rojo); certificado v1; certificado inexistente; sin errores de consola. 33 de 33 comprobaciones. **No hay pruebas automatizadas del frontend en el repositorio.**
+- **Subida de 200 MB por la cadena completa** Caddy → Next → backend (Caddy 2.11 en un contenedor descartable con las directivas del `Caddyfile` y solo el upstream cambiado; Next y backend como procesos locales contra `spaceproof_test`): `201` con el SHA-256 correcto; memoria de Caddy estable (~11 MiB), Next +8 MB, backend +18 MB; ningún archivo nuevo en el contenedor ni en el directorio temporal. **No es el stack de producción**: sin TLS ni las imágenes Docker reales.
+- **Rechazos e interrupciones a través del proxy de Next**: metadatos inválidos, más de 200 MB (con y sin `Content-Length`), certificado inexistente y corte del cliente a mitad de la subida: el estado real llega al cliente y no queda ninguna fila. Un cuerpo sin fin tras un rechazo se corta a los ~5 s con memoria estable.
+- **Proxy `/api/*` del frontend**: preflight de otro origen sin cabeceras CORS; formularios y `text/plain` → 415; `DELETE` → 405.
 
 ### Validado solo de forma estática
 
@@ -123,7 +133,7 @@ Las cinco primeras son decisiones de producto; el resto, las decisiones técnica
 | R6 | El CI nunca corrió en GitHub | Algo puede diferir en los runners (descarga de motores de Prisma, Docker), y nadie se entera hasta el primer push | Ambos | **RESUELTO** (S14): primera ejecución exitosa |
 | R7 | ~~Sin versión de hash almacenada; `verify()` asume v1~~ | — | — | **RESUELTO** (S16, S17): columna `hashVersion`, especificación escrita y verificación por versión |
 | R8 | `txHash` es un único campo que solo se completa una vez | Una transacción fallida o reemplazada deja el certificado asociado para siempre a un `txHash` incorrecto | MVP | Tabla `Anchor` con estados (F6) |
-| R9 | La interfaz no permite verificar | Un usuario no puede comprobar un certificado sin usar la API | MVP | Verificación y evidencia en la interfaz (F4, F7) |
+| R9 | ~~La interfaz no permite verificar~~ | — | — | **RESUELTO** en F4 para el archivo y el registro (S19). La evidencia del anclaje es F7 |
 | R10 | Un rol con `INSERT` puede guardar un hash arbitrario (aceptado) | Un registro inconsistente se guarda sin error; la verificación lo marca `valid:false` | Ambos (bajo) | Aceptado. El anclaje solo debe registrar hashes calculados por el servidor |
 | R11 | El owner puede `DROP TABLE`/`DROP SCHEMA`; `prisma migrate reset` borra desarrollo | Un comando equivocado con la credencial owner pierde datos | Ambos | Documentado. En producción: credencial owner solo en el contenedor `migrate`, y backup antes de migrar |
 | R12 | Backups: cifrado, copia externa y retención solo documentados | Un dump sin cifrar en el servidor expone datos personales; sin copia externa, perder el servidor es perder los datos | Producción | Automatizar backup cifrado y externo (I1) |
@@ -131,22 +141,30 @@ Las cinco primeras son decisiones de producto; el resto, las decisiones técnica
 | R14 | Sin rate limiting ni paginación | Con la credencial se puede llenar la base (y los certificados no se pueden borrar); el listado devuelve todos los nombres | Producción | Limitar escrituras y paginar (I3) |
 | R15 | Sin logs de acceso (Caddy sin `log`, backend sin línea por solicitud) | No se puede reconstruir un incidente | Producción | `log` en Caddy (I2) |
 | R16 | El superusuario puede entrar por TCP (`pg_hba host all all all`) | Una contraseña de administrador filtrada sirve desde la red interna de Docker | Producción | Restringir el superusuario al socket local (I4) |
-| R17 | Se aceptan caracteres de control o de bidireccionalidad en `title`/`recipient` | Un certificado puede mostrar un texto distinto del que contiene | Ambos (bajo) | Rechazarlos en el DTO (I5) |
-| R18 | El hash cubre solo metadatos: no certifica archivos | Si el objetivo incluye datos satelitales, el certificado no dice nada sobre su contenido | MVP | Decidido: el MVP certifica archivos (F1–F3) |
+| R17 | ~~Se aceptan caracteres de control o de bidireccionalidad~~ | — | — | **RESUELTO** en F3 (I5): el DTO rechaza controles, formato bidireccional y sustitutos sueltos en todos los textos. Otros caracteres invisibles (espacio de ancho cero, U+200B–U+200D) se siguen aceptando: algunos sistemas de escritura los necesitan |
+| R18 | ~~El hash cubre solo metadatos: no certifica archivos~~ | — | — | **RESUELTO** en F3 (S18) |
 | R19 | La comprobación de `Origin` de las Server Actions no tiene prueba automatizada | Una actualización de Next.js podría cambiarla sin que nadie lo note | Ambos (bajo) | Prueba automatizada del frontend (postergado) |
-| R20 | Subida de hasta 200 MB a través de Caddy y del proxy `/api/*` de Next.js sin probar | La subida podría cortarse, o un intermediario podría acumular el cuerpo en memoria o en disco (lo que rompería D2). La documentación local de Next 16 indica que el límite de 10 MB (`proxyClientMaxBodySize`) aplica solo cuando existe `proxy.ts`, que este proyecto no tiene; falta comprobarlo con un archivo real | MVP | Probar en F3 con un archivo de 200 MB midiendo memoria y disco de cada contenedor. Alternativa concreta si falla: que Caddy enrute `POST /api/certificates` y `/api/certificates/*/verify-file` directo al backend (mismo origen, sin CORS) |
+| R20 | ~~Subida de hasta 200 MB a través de Caddy y del proxy de Next sin probar~~ | El riesgo **se materializó** y se corrigió: `rewrites()` de Next copia el cuerpo en memoria y lo corta a los 10 MB (una subida de 11 MB fallaba con 500); la suposición sobre `proxy.ts` era incorrecta. Además, `fetch` retiene una segunda copia del cuerpo salvo con `redirect: "error"` y `window: null` (199 MB retenidos frente a ~15 MB) | — | **RESUELTO** en local (sección 8): Route Handler en flujo en lugar de `rewrites()`. Falta repetir la medición en el stack de producción real (P1) |
 | R21 | Fondos de prueba en Fuji | El faucet oficial puede exigir saldo en mainnet o un cupón; sin AVAX de prueba no hay anclaje ni demo | MVP | Conseguir fondos **ya** (próximo paso 2), antes de escribir el contrato |
 | R22 | La clave privada que firma los anclajes vive en una variable de entorno del backend | Un compromiso del backend permite anclar hashes arbitrarios en nombre de SpaceProof | Ambos | Aceptado para el MVP: clave exclusiva de Fuji, sin fondos reales, nunca en Git. Custodia de claves postergada |
 | R23 | Dependencia del RPC público de Fuji | Si el RPC no responde, el anclaje queda pendiente y la verificación no puede confirmar la cadena | MVP | La verificación responde «no se pudo comprobar» (nunca «válido»); el anclaje reintenta. Aceptado |
 | R24 | Los metadatos los declara quien emite; no se extraen del archivo ni se contrastan con nada | El certificado prueba que *estos* metadatos quedaron ligados a *este* archivo, no que sean verdaderos, ni que el archivo venga de un satélite, ni quién lo produjo | MVP | Aceptado. Se documenta en «Qué demuestra y qué no» (sección 4), en la interfaz y en el README |
 | R25 | El servidor no conserva el archivo (D2, confirmada) | Quien pierde el original no puede volver a verificarlo; SpaceProof no es un repositorio ni un backup | MVP | Aceptado por diseño; se informa al emitir |
 | R26 | Solo se comprueba la firma TIFF (4 bytes) | Se puede certificar un TIFF que no sea GeoTIFF, o uno corrupto. No afecta a la integridad: el hash cubre los bytes tal cual | MVP (bajo) | Aceptado. La interfaz y la API dicen «firma TIFF», nunca «GeoTIFF validado». Validación real postergada |
-| R27 | Una subida lenta puede superar el tiempo máximo de solicitud de Node (por defecto, 5 minutos) | 200 MB exigen unos 5,5 Mbit/s sostenidos; por debajo, la conexión se corta y hay que reintentar | MVP (bajo) | Medir en F3; ajustar el tiempo de espera del servidor solo si la prueba lo exige. La demo usa un archivo chico |
+| R27 | El tiempo máximo de solicitud de Node (`requestTimeout`, 5 minutos por defecto) corta las subidas lentas. **Medido** en la validación final | Una subida de 200 MB que dura 240 s termina bien; una de 340 s se corta a los ~326 s con `408`, tanto directa al backend como a través de Next. 200 MB exigen unos 5,5 Mbit/s sostenidos de subida. El corte no deja ningún registro y la interfaz lo explica | MVP (medio) | **Pendiente de decisión.** Subir `requestTimeout` solo en el backend no alcanza: el servidor de Next aplica el mismo límite y su modo standalone no ofrece una opción documentada para cambiarlo. Alternativas: un servidor propio para Next, o que Caddy enrute las dos rutas de archivo directo al backend (cambia producción) y subir ahí el límite. Para la demo (archivo chico) no afecta |
 | R28 | Si la respuesta de una emisión se pierde después de crear el certificado, reintentar crea un segundo certificado del mismo archivo | Dos certificados válidos para un mismo archivo (cada uno con su `id` y su anclaje) | MVP (bajo) | Aceptado: ambos son verdaderos. La interfaz desactiva el botón mientras envía |
+| R29 | Los metadatos viajan en la cabecera `X-SpaceProof-Metadata` (base64url, no cifrado) | Cualquier intermediario que registre cabeceras guarda título, destinatario y nombre de archivo. Caddy registra las cabeceras de la solicitud cuando se activa `log` | Producción | Al hacer I2, excluir esa cabecera del log de Caddy (filtro de formato). El backend y Next no la registran (probado en el backend) |
+| R30 | El adaptador de cuerpo de Next (`NodeNextRequest.stream()`) no aplica contrapresión | Si el backend leyera más lento que el cliente, Next acumularía la diferencia en memoria. No se observó: el backend solo calcula un hash y es más rápido que cualquier subida real | MVP (bajo) | Aceptado. La alternativa ya prevista sigue disponible: que Caddy enrute las dos rutas de archivo directo al backend (cambia la configuración de producción) |
+| R31 | Un rechazo temprano hace que el servidor siga leyendo y descartando hasta 5 s antes de cerrar | Ancho de banda desperdiciado durante ese lapso; memoria constante | Ambos (bajo) | Aceptado: sin esa espera el cliente y el proxy ven un corte de conexión en lugar del error real (medido) |
+| R32 | Con una versión de hash desconocida, verificar responde `500` | No hay hoy ninguna forma de crear esa fila (`CHECK` de la base), pero el mensaje al usuario sería genérico | Ambos (bajo) | Aceptado; decisión de F1 («no confundir no comprobable con alterado») |
+| R33 | La fecha de adquisición declarada puede ser futura | Metadato inverosímil certificado tal cual | MVP (bajo) | Aceptado: los metadatos son declarados (R24) |
+| R34 | La prueba e2e de memoria (RSS < 100 MB con 200 MB) depende del recolector de Node | Podría fallar de forma intermitente en otro entorno | Ambos (bajo) | Pasó en todas las ejecuciones: en Windows y 3 veces seguidas en un contenedor Linux con Node 22, como el CI. Falta verla en un runner real de GitHub |
 
 ---
 
-## 4. Arquitectura del MVP (planificada el 2026-11-13, **sin implementar**)
+## 4. Arquitectura del MVP (planificada el 2026-11-13; **implementada hasta F4**, ver sección 8)
+
+Lo relativo a Avalanche (anclaje, tabla `Anchor`, apartado D, estados `VALID`/`PENDING` reales, evidencia en la interfaz) **no está implementado**. Donde este plan y la sección 8 difieran, vale la sección 8.
 
 ### Qué demuestra SpaceProof y qué no
 
@@ -310,8 +328,8 @@ F5 no depende de F1–F4 y puede avanzar en paralelo. Todo lo demás es secuenci
 | **F0** (hecha) | Base limpia | Git | Fusionar `checkpoint/phase-3b-3d` en `main` (PR con CI en verde) | CI | `main` contiene las fases 3B–3D | — |
 | **F1** (hecha) | Hash v2 especificado | `certificate-hash.ts`, `docs/manifiesto-v2.md` | Función pura del manifiesto v2 junto a v1; selector por versión | Unitarias con vectores calculados fuera del código (`sha256sum`); las de v1 intactas | Los vectores pasan y la especificación permite reimplementar el hash sin leer el código | Congelar la lista de metadatos antes de empezar: una vez anclado, v2 no cambia |
 | **F2** (hecha) | Esquema para archivos | `schema.prisma`, migración nueva, `db-privileges.e2e-spec.ts` | Columnas de `Certificate` (hash, tamaño y nombre del archivo, metadatos, `hashVersion`); trigger actualizado; `CHECK` | e2e de inmutabilidad ampliados a las columnas nuevas; `migrate diff` sin diferencias; certificados v1 existentes siguen verificando | e2e en verde sobre base nueva y sobre la de desarrollo migrada in-place | Migración aditiva: no editar las aplicadas |
-| **F3** | Emitir y verificar con archivo (sin cadena) | `app.setup.ts`, `certificates.controller.ts`, `certificates.service.ts`, DTO | `POST /certificates` en una operación (cuerpo en streaming + cabecera de metadatos); `GET /manifest`; `verify` y `verify-file` (comprobaciones a y b) | e2e: emisión válida; metadatos inválidos → 400 **sin leer el cuerpo**; sin firma TIFF → 415; vacío → 400; > 200 MB → 413; **carga interrumpida → ninguna fila nueva**; **original → coincide; un byte cambiado → `FILE_MISMATCH`**; registro inconsistente → `RECORD_MISMATCH`; CSRF: multipart, `text/plain` y JSON siguen rechazados en la ruta de emisión; los logs no contienen metadatos ni nombre de archivo | Los e2e pasan por HTTP; un archivo de 200 MB sube por Caddy + Next con memoria estable y **sin que aparezca ningún archivo** en los contenedores | R20, R27 |
-| **F4** | Demo local sin cadena | `certificate-form.tsx`, `actions.ts`, `lib/api.ts`, `certificates/[id]/page.tsx` | Subida con `fetch` (sustituye la Server Action de emisión), certificado, verificación, aviso de no conservación y «Qué prueba este certificado» | Manual en navegador real (primera vez: hoy no está comprobado) + lint y build | Una persona emite y ve «válido» / «modificado» sin usar la API | — |
+| **F3** (hecha) | Emitir y verificar con archivo (sin cadena) | `app.setup.ts`, `certificates.controller.ts`, `certificates.service.ts`, DTO | `POST /certificates` en una operación (cuerpo en streaming + cabecera de metadatos); `GET /manifest`; `verify` y `verify-file` (comprobaciones a y b) | e2e: emisión válida; metadatos inválidos → 400 **sin leer el cuerpo**; sin firma TIFF → 415; vacío → 400; > 200 MB → 413; **carga interrumpida → ninguna fila nueva**; **original → coincide; un byte cambiado → `FILE_MISMATCH`**; registro inconsistente → `RECORD_MISMATCH`; CSRF: multipart, `text/plain` y JSON siguen rechazados en la ruta de emisión; los logs no contienen metadatos ni nombre de archivo | Los e2e pasan por HTTP; un archivo de 200 MB sube por Caddy + Next con memoria estable y **sin que aparezca ningún archivo** en los contenedores | R20, R27 |
+| **F4** (hecha) | Demo local sin cadena | `certificate-form.tsx`, `actions.ts`, `lib/api.ts`, `certificates/[id]/page.tsx` | Subida con `fetch` (sustituye la Server Action de emisión), certificado, verificación, aviso de no conservación y «Qué prueba este certificado» | Manual en navegador real (primera vez: hoy no está comprobado) + lint y build | Una persona emite y ve «válido» / «modificado» sin usar la API | — |
 | **F5** | Contrato en Fuji | `contracts/` (nuevo) | `SpaceProofAnchor`, pruebas, script de despliegue, verificación del código en el explorador | Hardhat en red local: ancla; rechaza duplicado; rechaza a quien no es owner; emite evento | Contrato desplegado y verificado en Fuji; dirección y ABI versionadas; un `anchor()` manual visible en el explorador | R21 (fondos) |
 | **F6** | Anclaje automático | Migración `Anchor`, módulo `anchoring` nuevo, `certificates.service.ts` | Tabla y permisos; servicio de envío, seguimiento y barrido; comprobación c en `verify` | Unitarias con cliente de cadena falso: camino feliz, reinicio entre envío y confirmación, hash ya anclado (no reenvía), revert, RPC caído → `UNVERIFIABLE`; e2e de privilegios de `Anchor`; una prueba manual contra Fuji | Un certificado nuevo llega solo a `CONFIRMED` en Fuji; matar el backend a mitad del anclaje no produce ni duplicados ni un certificado atascado | R22, R23 |
 | **F7** | Evidencia en la UI | `certificates/[id]/page.tsx`, `certificate-list.tsx` | Estado del anclaje, enlace al explorador, actualización mientras está pendiente, «Verificalo vos mismo» | Manual en navegador; lint y build | Desde la página del certificado se llega a la transacción en el explorador con un clic | — |
@@ -354,25 +372,22 @@ Decisiones técnicas tomadas al implementar F1 y F2 (ninguna cambia el diseño):
 
 | # | Estado | Pendiente | Resuelve |
 |---|---|---|---|
-| F3 | **CRÍTICO** | Emisión en una operación y verificación de archivo, sin almacenamiento | R18 |
-| F4 | **CRÍTICO** | Interfaz de emisión y verificación | R9 |
 | F5 | **CRÍTICO** | Contrato desplegado en Fuji | R1 |
 | F6 | **CRÍTICO** | Modelo `Anchor` y anclaje automático con recuperación | R1, R8 |
 | F7 | IMPORTANTE | Evidencia del anclaje en la interfaz | R9 |
 | F8 | IMPORTANTE | README, ensayo de demo | — |
 
-Ninguno de estos está implementado. F0, F1 y F2 están en «Resueltos». **Siguiente: F3.**
+Ninguno de estos está implementado. F0 a F4 están en «Resueltos». **Siguiente: F5** (contrato en Fuji), que no depende de nada anterior; antes hay que fusionar el pull request de F3 y F4 con el CI en verde.
 
 ### Antes de publicar en un servidor (no bloquean la demo local)
 
 | # | Estado | Pendiente | Resuelve |
 |---|---|---|---|
-| P1 | IMPORTANTE | Adaptar producción a los roles: URLs separadas (owner solo en `migrate`, app en `backend`), montaje y variables del bootstrap, `pg_isready` por TCP, healthcheck del backend en `/api/health/ready`, variables `ANCHOR_*`, `.env.production.example`, y despliegue en orden con backup previo, bootstrap, `migrate deploy`, verificación de permisos y `verify:certificates` | R2, R3, R4 |
+| P1 | IMPORTANTE | Adaptar producción a los roles: URLs separadas (owner solo en `migrate`, app en `backend`), montaje y variables del bootstrap, `pg_isready` por TCP, healthcheck del backend en `/api/health/ready`, variables `ANCHOR_*`, `.env.production.example`, repetir la subida de 200 MB en el stack real midiendo memoria y disco (R20), y despliegue en orden con backup previo, bootstrap, `migrate deploy`, verificación de permisos y `verify:certificates` | R2, R3, R4 |
 | I1 | IMPORTANTE | Backup automático, cifrado y externo, con retención y simulacro periódico | R12 |
-| I2 | IMPORTANTE | Logs de acceso en Caddy | R15 |
+| I2 | IMPORTANTE | Logs de acceso en Caddy, **sin** la cabecera `X-SpaceProof-Metadata` | R15, R29 |
 | I3 | IMPORTANTE | Rate limiting de escrituras (incluidas las subidas) y paginación del listado | R14 |
 | I4 | IMPORTANTE | Superusuario limitado al socket local en `pg_hba` | R16 |
-| I5 | IMPORTANTE | Rechazar caracteres de control y de bidireccionalidad en el DTO (incluye los metadatos nuevos; conviene hacerlo dentro de F3) | R17 |
 
 P1 pasó de CRÍTICO a IMPORTANTE: bloquea la publicación, no el funcionamiento ni la integridad del producto. Si la entrega exige una URL pública, se hace antes de F8.
 
@@ -397,6 +412,8 @@ P1 pasó de CRÍTICO a IMPORTANTE: bloquea la publicación, no el funcionamiento
 | S15 | RESUELTO | **F0** — checkpoint 3B–3D y planificación fusionados en `main` | PR #1 fusionado con merge commit `51d1d4d`; CI en verde sobre el PR (`4504b58`) y sobre `main` |
 | S16 | RESUELTO | **F1** — manifiesto v2: función, selección por versión y especificación con vectores (R7) | [manifiesto-v2.md](manifiesto-v2.md); unit `certificate-hash.spec.ts` |
 | S17 | RESUELTO | **F2** — esquema y migración para certificados de archivo, compatibles con v1 (R7) | e2e T16–T20; 97/97 e2e en base nueva y en servidor nuevo; ensayo de migración sobre certificados v1; base de desarrollo migrada sin diferencias |
+| S18 | RESUELTO | **F3** — emisión y verificación de archivos en el backend, sin almacenamiento (R18, R17/I5, R20) | Sección 8; 179 unitarias y 169 e2e |
+| S19 | RESUELTO | **F4** — interfaz de emisión y verificación (R9) | Sección 8; lint, build y 33 comprobaciones en navegador real |
 
 ---
 
@@ -439,7 +456,7 @@ P1 pasó de CRÍTICO a IMPORTANTE: bloquea la publicación, no el funcionamiento
 - **Revocación de certificados** como registro aparte (sin borrado).
 - **Procedimiento de borrado por solicitudes legales o de privacidad** (pospuesto por decisión).
 - **Verificación pública sin credenciales** (por hash o por id).
-- **Tests del frontend**, incluida la comprobación de `Origin` de las Server Actions (R19).
+- **Tests del frontend**. (La comprobación de `Origin` de las Server Actions, R19, dejó de aplicar: desde F4 no queda ninguna Server Action.)
 - **Event trigger que bloquee `DROP`** sobre `Certificate` en producción.
 - **Logs de acceso del backend** con trazabilidad por solicitud (el `requestId` ya existe).
 - **Eliminar `/api` "Hello World"** cuando producción use `/api/health/ready`.
@@ -448,3 +465,139 @@ P1 pasó de CRÍTICO a IMPORTANTE: bloquea la publicación, no el funcionamiento
 - **Cancelar la consulta** cuando `/api/health/ready` vence (hoy solo deja de esperarla).
 - **Formato CRLF** en checkouts de Windows (`prettier --check` lo marca; no afecta al CI en Linux).
 - **7 avisos moderados de `npm audit`** en dependencias de desarrollo del frontend (ESLint).
+
+---
+
+## 8. F3 y F4 — registro de implementación y auditoría (2026-11-13)
+
+Estado real: **F3 terminada** y **F4 terminada**, con sus criterios de aceptación cumplidos **en local**. Nada de esto se probó en producción; el CI de GitHub corre con el pull request.
+
+### Qué se implementó
+
+**F3 (backend)**
+
+- `POST /api/certificates`: archivo como cuerpo crudo `image/tiff` y metadatos en `X-SpaceProof-Metadata` (base64url). Orden: tipo de contenido → metadatos → `Content-Length` → cuerpo en flujo (firma TIFF, SHA-256, conteo de bytes) → manifiesto v2 → un único `INSERT`.
+- `POST /api/certificates/:id/verify-file`, `GET /api/certificates/:id/verify` ampliado con `status`, `reason` y `checks` (conserva `valid`), y `GET /api/certificates/:id/manifest`.
+- Puerto de solo lectura `AnchorReader` con una única implementación, `UnconfiguredAnchorReader`, que responde «no configurado».
+- Validación de metadatos con rechazo de caracteres de control, bidireccionales y sustitutos sueltos (I5).
+- Cierre diferido tras un rechazo temprano (5 s leyendo y descartando).
+
+**F4 (frontend)**
+
+- Formulario de emisión: archivo, metadatos del manifiesto v2, validación previa (campos, tamaño, extensión, firma TIFF), progreso, cancelación, errores en castellano y redirección al certificado.
+- Página del certificado: datos emitidos, identificador, verificación de archivo con tres resultados visibles (verde «Integridad verificada», rojo «Archivo alterado o distinto» / «Manifiesto alterado», ámbar «No verificable en Avalanche»), y «Qué prueba este certificado» con sus tres límites.
+- Proxy `/api/*` como Route Handler en flujo, en lugar de `rewrites()`.
+
+### Archivos
+
+| | Archivos |
+|---|---|
+| Backend, nuevos | `src/certificates/file-upload.ts`, `metadata-header.ts`, `anchor-reader.ts`, `dto/issue-certificate.dto.ts`; pruebas `file-upload.spec.ts`, `metadata-header.spec.ts`; `test/files.ts` |
+| Backend, modificados | `src/app.setup.ts`, `src/certificates/certificates.controller.ts`, `certificates.service.ts`, `certificates.module.ts`, `certificate-hash.ts`; pruebas `certificates.service.spec.ts`, `test/certificates.e2e-spec.ts`, `csrf.e2e-spec.ts`, `observability.e2e-spec.ts`, `db-privileges.e2e-spec.ts` |
+| Backend, eliminado | `src/certificates/dto/create-certificate.dto.ts` |
+| Frontend, nuevos | `app/api/[...path]/route.ts`, `app/certificates/[id]/verify-file.tsx`, `app/upload-progress.tsx`, `lib/certificates.ts`, `lib/upload.ts` |
+| Frontend, modificados | `app/certificate-form.tsx`, `app/certificates/[id]/page.tsx`, `app/certificate-list.tsx`, `app/layout.tsx`, `lib/api.ts`, `next.config.ts`, `README.md` |
+| Frontend, eliminado | `app/actions.ts` |
+| Documentación | `docs/API_EMISION_VERIFICACION.md` (nuevo), este documento, `README.md` (solo las líneas que habían quedado falsas; la revisión completa es F8) |
+
+Sin cambios: `docker-compose.prod.yml`, `Caddyfile`, `.env*`, Dockerfiles, CI, esquema de Prisma y migraciones. Sin dependencias nuevas.
+
+### Decisiones técnicas
+
+| Decisión | Motivo |
+|---|---|
+| **Sin tabla `Anchor` ni «registro pendiente» en F3**: se inserta solo el certificado | La tabla está planificada para F6 junto con el servicio que la usa. Un certificado sin anclaje es, de hecho, el registro pendiente |
+| **Sin integración, `status` es `UNVERIFIABLE`**, con `checks.file` y `checks.record` en `MATCH` | Cumple «no comprobable, nunca válido» sin ocultar que las comprobaciones locales pasaron. Hoy `VALID` y `PENDING` solo se alcanzan en pruebas, con un lector falso |
+| La cadena responde «no está» → `PENDING` | Sin tabla `Anchor` no se puede distinguir «todavía no» de «debería estar»; F6 separa `INVALID`/`NOT_ANCHORED` |
+| Solo el lado de lectura del anclaje | El de escritura no tendría quién lo llame hasta F6 |
+| `verify-file` **no** exige firma TIFF | Un archivo alterado en sus primeros bytes debe dar «alterado», no un rechazo |
+| `fileName` obligatorio al emitir, con extensión `.tif`/`.tiff` | El plan comprueba «extensión + firma»; la columna sigue admitiendo nulo |
+| Fecha de adquisición: instante con segundos y zona explícita | Sin zona, la fecha dependería del huso del servidor. La interfaz la pide en UTC |
+| `POST /api/certificates` con JSON → `415`; desaparece la emisión v1 | Decisión del plan: no se emiten certificados sin archivo |
+| `GET …/verify` conserva `valid` (= el registro es consistente), marcado obsoleto | Compatibilidad; `verify-file` no lo incluye, para que nadie lea `valid: true` junto a un archivo alterado |
+| Route Handler en flujo en lugar de `rewrites()` (R20) | Mantiene «origen único» sin tocar producción. Alternativa del plan, no usada: enrutar desde Caddy |
+| Subida con `XMLHttpRequest`, no `fetch` | Es lo que informa el progreso de la subida |
+| `BACKEND_URL` se lee al ejecutar, no al construir | Consecuencia del Route Handler. El compose de producción ya la define en ambos momentos |
+
+### Validación final (2026-11-13)
+
+Hecha después de la auditoría, sin agregar funcionalidades. Única corrección: la interfaz mostraba un error genérico ante un `408`; ahora explica que la subida superó los cinco minutos (`frontend/lib/upload.ts`), y el contrato documenta ese estado.
+
+#### Pruebas ejecutadas y aprobadas
+
+| Prueba | Entorno | Resultado |
+|---|---|---|
+| Backend, unitarias (`pnpm test`) | Windows y contenedor Linux | 179/179 en ambos |
+| Backend, e2e (`pnpm test:e2e`) | Windows, base `spaceproof_test` del servidor de desarrollo | 169/169 |
+| Backend, e2e sobre **PostgreSQL nuevo** | Contenedor Linux + `postgres:17-alpine` con volumen nuevo, descartado al terminar | 169/169, tres ejecuciones seguidas |
+| Bootstrap de roles en `initdb` y repetido (idempotente); `migrate deploy` de las 6 migraciones; `migrate status`; `migrate diff` contra la base y contra las migraciones | Ídem | Sin errores ni diferencias |
+| Prueba e2e de memoria (200 MB, RSS < 100 MB) en condiciones similares al CI | Linux, Node 22, pnpm 10.27.0 | Aprobada en las tres ejecuciones |
+| Backend, lint como en CI (sin `--fix`) y build | Windows y contenedor Linux | Sin errores |
+| `verify:certificates` | Contenedor Linux | Ejecuta sin errores (base vacía, como en el CI) |
+| Frontend, `npm ci`, lint y build sin backend | Windows y contenedor Linux | Sin errores |
+| `git diff --check`; búsqueda de secretos, artefactos de prueba y caracteres invisibles en los archivos tocados | — | Sin hallazgos |
+| Correspondencia contrato ↔ frontend (cabeceras, campos de metadatos, límites, estados HTTP, campos de `Certificate` y `Verification`, los seis resultados de verificación) | Revisión del código contra `API_EMISION_VERIFICACION.md` | Coinciden; faltaba el `408`, agregado |
+| Interfaz en navegador real (Edge sin interfaz gráfica) | Script fuera del repositorio | 33/33 |
+| 200 MB por Caddy → Next → backend | Caddy 2.11 descartable + procesos locales | `201`, hash correcto, memoria estable, sin archivos |
+| Subida lenta de 200 MB en 240 s | Directa al backend y a través de Next | `201`, hash correcto |
+| Subida lenta de 200 MB en 340 s | Ídem | Cortada a los ~326 s con `408`; ningún registro creado. Es el comportamiento documentado en R27, **no un éxito** |
+
+La reproducción del CI copia exactamente lo que contendría un commit del árbol de trabajo y ejecuta los pasos de `.github/workflows/ci.yml` (jobs `backend`, `e2e` y `frontend`). No es el CI.
+
+#### Pruebas no ejecutadas
+
+| Prueba | Motivo |
+|---|---|
+| CI de GitHub Actions | Corre sobre el pull request de `feat/f3-f4-certification`; su resultado no figura en este documento, que se escribió antes |
+| Job `compose` del CI (`docker compose config` de producción) | Los archivos que valida no cambiaron |
+| Stack de producción real (imágenes Docker, TLS, `docker-compose.prod.yml`) | No se modifica ni se levanta producción |
+| Subida de 200 MB por una red real (no loopback) y desde un navegador con Caddy delante | Sin entorno; lo más cercano es la prueba con Caddy descartable |
+| Pruebas automatizadas del frontend | No existen en el repositorio (postergado). El proxy en flujo y sus dos opciones de `fetch` no tienen prueba de regresión |
+| Pruebas de mutación | No se hicieron |
+
+#### Riesgos pendientes
+
+R27 (límite de cinco minutos, medido, pendiente de decisión), R29 (cabecera de metadatos en futuros logs de Caddy), R30 (sin contrapresión en el adaptador de Next), R34 (prueba de memoria en un runner real) y los ya conocidos de producción (P1, I1–I4). Detalle en la sección 3.
+
+#### Criterios de aceptación
+
+| Fase | Criterio (sección 5) | Estado |
+|---|---|---|
+| F3 | Los e2e pasan por HTTP: emisión válida; metadatos inválidos → 400 sin leer el cuerpo; sin firma TIFF → 415; vacío → 400; > 200 MB → 413; carga interrumpida → ninguna fila; original → coincide; un byte cambiado → `FILE_MISMATCH`; registro inconsistente → `RECORD_MISMATCH`; CSRF; logs sin metadatos ni nombre de archivo | **Cumplido** |
+| F3 | Un archivo de 200 MB sube por Caddy + Next con memoria estable y sin que aparezca ningún archivo en los contenedores | **Cumplido en local** con Caddy descartable y Next y backend como procesos; pendiente de repetir en el stack real (P1) |
+| F4 | Una persona emite y ve «coincide» / «modificado» sin usar la API; lint y build | **Cumplido** (navegador real manejado por script). Hoy el original se muestra como «No verificable en Avalanche», nunca como válido: no hay cadena |
+
+#### Confirmaciones de arquitectura
+
+- El certificado se inserta **solo después** de recibir el archivo completo: el controlador espera el resumen del cuerpo entero antes de llamar al servicio, y la única escritura de toda la aplicación es ese `INSERT`.
+- **No se persisten bytes originales**: el código no usa el sistema de archivos ni temporales; el esquema no tiene columnas binarias; lo único que se acumula del archivo son sus 4 primeros bytes, para la firma.
+- **No existe una tabla `Anchor`**: el esquema tiene un solo modelo y no hay migraciones nuevas.
+- **F6 debe** crear `Anchor(PENDING)` y el certificado en una misma transacción (hoy es un único `INSERT`; F6 lo convierte en una transacción con dos).
+- Sin Avalanche el resultado es `UNVERIFIABLE`, nunca `VALID`; un error de RPC, también.
+- Los certificados **v1 siguen siendo verificables** (`GET …/verify` y `verify:certificates`).
+- **No se modificó producción**: `docker-compose.prod.yml`, `Caddyfile`, `.env*`, Dockerfiles, CI, esquema, migraciones y lockfiles sin cambios.
+
+### Auditoría
+
+| Severidad | Hallazgo | Estado |
+|---|---|---|
+| Crítico | — | Ninguno |
+| Alto | El proxy `rewrites()` de Next cortaba toda subida de más de 10 MB y copiaba el cuerpo en memoria | Corregido |
+| Alto | `fetch` en el proxy retenía en memoria el archivo completo durante la subida | Corregido |
+| Medio | Un rechazo temprano llegaba al cliente y al proxy como corte de conexión o `502`, sin el error real | Corregido (cierre diferido) |
+| Medio | Quedaron caracteres de control bidireccionales **literales** en el código fuente (expresión regular del DTO y una prueba) en lugar de escapes | Corregido; se revisaron todos los archivos tocados |
+| Medio | Tiempo máximo de solicitud de 5 minutos en dos servidores Node | **Pendiente** (R27); medido en la validación final. La interfaz ahora explica el corte |
+| Medio | La cabecera de metadatos quedaría en los logs de acceso de Caddy cuando se activen | **Pendiente** (R29, I2) |
+| Bajo | Una prueba unitaria de memoria no probaba nada (reutilizaba el mismo bloque) | Eliminada; la evidencia es la prueba e2e con 200 MB y las mediciones |
+| Bajo | La prueba de «no se abre ningún archivo para escritura» reemplazaba `fs.open` en vez de observarlo | Corregida |
+| Bajo | La hora de adquisición se mostraba en formato de 12 horas | Corregido (24 h, UTC) |
+| Bajo | README con instrucciones que ya no eran ciertas | Corregidas esas líneas |
+| Bajo | R30 a R34 | Aceptados, documentados |
+
+Comprobado en la auditoría, sin hallazgos: el hash del archivo y del manifiesto se calculan solo en el servidor; el cliente no puede enviar `id`, fechas, hashes ni tamaño; una fila solo existe si el cuerpo llegó completo; v1 intacto; ningún texto de la interfaz ni de la API afirma autenticidad, procedencia o autoría; ningún cambio en producción.
+
+### Qué falta para F5 y F6
+
+- **F5**: conseguir AVAX de prueba en Fuji (R21, sigue sin hacerse); paquete `contracts/` con Hardhat; contrato `SpaceProofAnchor`, pruebas, despliegue y verificación en el explorador; versionar ABI y dirección. No depende de F3 ni F4.
+- **F6**: migración `Anchor` con permisos y trigger; dependencia `viem`; implementación real de `AnchorReader` (reemplaza a `UnconfiguredAnchorReader` en `certificates.module.ts`); servicio de envío, seguimiento y barrido; insertar `Anchor(PENDING)` en la misma transacción que el certificado; distinguir `PENDING` de `INVALID`/`NOT_ANCHORED`; variables `ANCHOR_*`.
+- **F7**: en la página del certificado, reemplazar «Integración pendiente» por el estado real del anclaje y el enlace al explorador; «Verificalo vos mismo» con la descarga del manifiesto (la ruta ya existe).

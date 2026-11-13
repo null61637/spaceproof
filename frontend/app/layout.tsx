@@ -15,7 +15,7 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "SpaceProof",
-  description: "Gestión de certificados",
+  description: "Certificados de integridad de archivos satelitales",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

@@ -1,7 +1,9 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Suspense } from "react";
-import { ApiError, formatDate, getCertificate } from "@/lib/api";
+import { ApiError, getCertificate } from "@/lib/api";
+import { formatBytes, formatDate, formatUtc } from "@/lib/certificates";
+import { VerifyFile } from "./verify-file";
 
 export default function CertificatePage({
   params,
@@ -38,9 +40,11 @@ async function CertificateDetail({
     }
     throw error;
   }
+  // Certificates issued before files existed (hash version 1) have none.
+  const hasFile = certificate.fileSha256 !== null;
 
   return (
-    <article className="flex flex-col gap-6">
+    <article className="flex flex-col gap-8">
       <header className="flex flex-col gap-1">
         <h1 className="text-2xl font-semibold break-words">
           {certificate.title}
@@ -50,28 +54,113 @@ async function CertificateDetail({
         </p>
       </header>
 
-      <dl className="grid gap-4 rounded-lg border border-zinc-200 p-4 text-sm sm:grid-cols-[10rem_1fr] dark:border-zinc-800">
-        <Row label="ID">
+      <dl className="grid gap-4 rounded-lg border border-zinc-200 p-4 text-sm sm:grid-cols-[11rem_1fr] dark:border-zinc-800">
+        <Row label="ID del certificado">
           <code className="font-mono break-all">{certificate.id}</code>
+          <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+            Guardá este identificador o la dirección de esta página: lo vas a
+            necesitar para verificar el archivo.
+          </p>
         </Row>
         <Row label="Fecha de emisión">
           <time dateTime={certificate.createdAt}>
             {formatDate(certificate.createdAt)}
           </time>
         </Row>
-        <Row label="Hash SHA-256">
+        {hasFile && (
+          <>
+            <Row label="Archivo">
+              <span className="break-all">
+                {certificate.fileName ?? "Sin nombre"}
+              </span>
+              {certificate.fileSizeBytes !== null && (
+                <span className="text-zinc-500 dark:text-zinc-400">
+                  {" "}
+                  · {formatBytes(certificate.fileSizeBytes)}
+                </span>
+              )}
+            </Row>
+            <Row label="SHA-256 del archivo">
+              <code className="font-mono break-all">
+                {certificate.fileSha256}
+              </code>
+            </Row>
+            <Row label="Satélite (declarado)">{certificate.satellite}</Row>
+            <Row label="Sensor (declarado)">
+              {certificate.sensor ?? <Absent>No declarado</Absent>}
+            </Row>
+            <Row label="Escena (declarada)">
+              {certificate.sceneId ?? <Absent>No declarada</Absent>}
+            </Row>
+            <Row label="Adquisición (declarada)">
+              {certificate.acquiredAt && (
+                <time dateTime={certificate.acquiredAt}>
+                  {formatUtc(certificate.acquiredAt)}
+                </time>
+              )}
+            </Row>
+          </>
+        )}
+        <Row label={hasFile ? "Hash del manifiesto" : "Hash SHA-256"}>
           <code className="font-mono break-all">{certificate.contentHash}</code>
-        </Row>
-        <Row label="Transacción">
-          {certificate.txHash ? (
-            <code className="font-mono break-all">{certificate.txHash}</code>
-          ) : (
-            <span className="text-zinc-500 dark:text-zinc-400">
-              Todavía no registrado en blockchain
-            </span>
+          {hasFile && (
+            <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+              Vincula el archivo con los metadatos: es el hash que se
+              registrará en Avalanche.
+            </p>
           )}
         </Row>
+        <Row label="Registro en Avalanche">
+          <Absent>
+            Integración pendiente: este certificado todavía no está registrado
+            en la blockchain.
+          </Absent>
+        </Row>
       </dl>
+
+      <section aria-labelledby="verify" className="flex flex-col gap-3">
+        <h2 id="verify" className="text-lg font-semibold">
+          Verificar un archivo
+        </h2>
+        {hasFile ? (
+          <>
+            <p className="text-sm text-zinc-600 dark:text-zinc-300">
+              Volvé a subir el archivo para comprobar si es, bit a bit, el que
+              se certificó.
+            </p>
+            <VerifyFile certificateId={certificate.id} />
+          </>
+        ) : (
+          <p className="text-sm text-zinc-600 dark:text-zinc-300">
+            Este certificado se emitió antes de que SpaceProof certificara
+            archivos: cubre solo el título y el destinatario, y no tiene un
+            archivo contra el cual verificar.
+          </p>
+        )}
+      </section>
+
+      <section
+        aria-labelledby="scope"
+        className="flex flex-col gap-2 rounded-lg border border-zinc-200 p-4 text-sm dark:border-zinc-800"
+      >
+        <h2 id="scope" className="text-base font-semibold">
+          Qué prueba este certificado
+        </h2>
+        <p>
+          Que un archivo y los metadatos de arriba coinciden, bit a bit, con lo
+          que se certificó en la fecha de emisión.
+        </p>
+        <p>No prueba, por sí mismo:</p>
+        <ul className="list-disc pl-5">
+          <li>que el archivo provenga realmente de un satélite;</li>
+          <li>que los metadatos declarados sean verdaderos;</li>
+          <li>quién produjo originalmente la imagen.</li>
+        </ul>
+        <p className="text-zinc-500 dark:text-zinc-400">
+          Tampoco valida el formato: solo se comprobó que el archivo tuviera
+          firma TIFF. SpaceProof no conserva el archivo original.
+        </p>
+      </section>
     </article>
   );
 }
@@ -83,6 +172,10 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
       <dd className="min-w-0">{children}</dd>
     </>
   );
+}
+
+function Absent({ children }: { children: React.ReactNode }) {
+  return <span className="text-zinc-500 dark:text-zinc-400">{children}</span>;
 }
 
 function DetailSkeleton() {
