@@ -38,4 +38,41 @@ model Certificate {
   sensor        String?
   sceneId       String?
   acquiredAt    DateTime?
+
+  // Absent for certificates issued before anchoring existed.
+  anchor Anchor?
+}
+
+enum AnchorStatus {
+  PENDING
+  SUBMITTED
+  CONFIRMED
+  FAILED
+}
+
+// The anchoring of one certificate's contentHash in the SpaceProofAnchor
+// contract. The chain is the source of truth: this row tracks the sending and
+// keeps the link to the transaction.
+//
+// Rules enforced by the database (anchor migration, not modelled by Prisma):
+// a row is born PENDING; CONFIRMED is final; certificateId, chainId and
+// contractAddress never change; rows cannot be deleted. The runtime role may
+// only UPDATE the columns from status to updatedAt.
+model Anchor {
+  id              String      @id @default(uuid())
+  certificateId   String      @unique
+  certificate     Certificate @relation(fields: [certificateId], references: [id], onDelete: Restrict)
+  chainId         Int
+  contractAddress String      @db.Char(42)
+  createdAt       DateTime    @default(now())
+
+  status      AnchorStatus @default(PENDING)
+  txHash      String?      @db.Char(66)
+  blockNumber BigInt?
+  // Block timestamp the contract stored for the hash.
+  anchoredAt  DateTime?
+  attempts    Int          @default(0)
+  // Error name or code only: never a message, a URL or request data.
+  lastError   String?
+  updatedAt   DateTime     @updatedAt
 }
