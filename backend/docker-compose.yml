@@ -6,12 +6,23 @@ services:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
+      # Read by db/init/10-roles.sh (automatic on a new volume, otherwise `pnpm db:bootstrap`).
+      SPACEPROOF_OWNER_PASSWORD: ${SPACEPROOF_OWNER_PASSWORD:?set SPACEPROOF_OWNER_PASSWORD in .env}
+      SPACEPROOF_APP_PASSWORD: ${SPACEPROOF_APP_PASSWORD:?set SPACEPROOF_APP_PASSWORD in .env}
+      # Development only: E2E database (the API role may connect) and Prisma
+      # shadow database (owner only). Production sets neither.
+      SPACEPROOF_TEST_DATABASE: spaceproof_test
+      SPACEPROOF_SHADOW_DATABASE: spaceproof_shadow
     ports:
-      - '${POSTGRES_PORT:-5432}:5432'
+      - '127.0.0.1:${POSTGRES_PORT:-5432}:5432'
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}']
+      # Over TCP: during initdb (first start, while db/init runs) the image's
+      # temporary server listens only on the Unix socket, so the container must
+      # not look healthy yet.
+      test: ['CMD-SHELL', 'pg_isready -h 127.0.0.1 -U $${POSTGRES_USER} -d $${POSTGRES_DB}']
       interval: 5s
       timeout: 5s
       retries: 10

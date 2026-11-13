@@ -16,11 +16,11 @@ interface CertificateBody {
   createdAt: string;
 }
 
-// Runs against the PostgreSQL in DATABASE_URL and deletes every row it creates.
+// Runs against spaceproof_test as spaceproof_app, like the real API. Rows are
+// never deleted; global-setup.ts rebuilds the database before each run.
 describe('Certificates (e2e)', () => {
   let app: INestApplication<App>;
   let prisma: PrismaService;
-  const createdIds: string[] = [];
 
   beforeAll(async () => {
     const moduleRef = await Test.createTestingModule({
@@ -33,7 +33,6 @@ describe('Certificates (e2e)', () => {
   });
 
   afterAll(async () => {
-    await prisma.certificate.deleteMany({ where: { id: { in: createdIds } } });
     await app.close();
   });
 
@@ -42,9 +41,7 @@ describe('Certificates (e2e)', () => {
       .post('/api/certificates')
       .send({ title, recipient: 'Ada' })
       .expect(201);
-    const body = res.body as CertificateBody;
-    createdIds.push(body.id);
-    return body;
+    return res.body as CertificateBody;
   }
 
   it('creates a certificate with a server-generated SHA-256 and verifies it', async () => {
@@ -123,56 +120,5 @@ describe('Certificates (e2e)', () => {
       .post('/api/certificates')
       .send(payload)
       .expect(400);
-  });
-
-  describe('database integrity trigger', () => {
-    it.each<[string, Record<string, unknown>]>([
-      ['title', { title: 'Tampered' }],
-      ['recipient', { recipient: 'Mallory' }],
-      ['createdAt', { createdAt: new Date('2000-01-01T00:00:00.000Z') }],
-      ['contentHash', { contentHash: 'b'.repeat(64) }],
-      ['id', { id: '00000000-0000-4000-8000-0000000000aa' }],
-    ])('rejects a direct UPDATE of %s', async (_field, data) => {
-      const { id } = await createCertificate();
-      await expect(
-        prisma.certificate.update({ where: { id }, data }),
-      ).rejects.toThrow(/is immutable/);
-
-      const row = await prisma.certificate.findUniqueOrThrow({ where: { id } });
-      expect(computeCertificateHash(row)).toBe(row.contentHash);
-    });
-
-    it('allows filling txHash once, only while it is NULL', async () => {
-      const { id } = await createCertificate();
-
-      await prisma.certificate.update({
-        where: { id },
-        data: { txHash: '0xabc' },
-      });
-      const row = await prisma.certificate.findUniqueOrThrow({ where: { id } });
-      expect(row.txHash).toBe('0xabc');
-
-      await expect(
-        prisma.certificate.update({ where: { id }, data: { txHash: '0xdef' } }),
-      ).rejects.toThrow(/already has a txHash/);
-      await expect(
-        prisma.certificate.update({ where: { id }, data: { txHash: null } }),
-      ).rejects.toThrow(/already has a txHash/);
-
-      await request(app.getHttpServer())
-        .get(`/api/certificates/${id}/verify`)
-        .expect(200)
-        .expect((res) =>
-          expect((res.body as { valid: boolean }).valid).toBe(true),
-        );
-    });
-
-    it('does not block DELETE', async () => {
-      const { id } = await createCertificate();
-      await prisma.certificate.delete({ where: { id } });
-      await expect(
-        prisma.certificate.findUnique({ where: { id } }),
-      ).resolves.toBeNull();
-    });
   });
 });

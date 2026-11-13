@@ -1,15 +1,16 @@
 # SpaceProof
 
-SpaceProof es una aplicación web para emitir y verificar certificados. Cada certificado se guarda en PostgreSQL junto con un **hash SHA-256 generado por el servidor** a partir de sus datos, y la base de datos impide modificarlo después de creado. Cualquier alteración posterior se puede detectar recalculando el hash.
+SpaceProof es una aplicación web para emitir y verificar certificados. Cada certificado se guarda en PostgreSQL junto con un **hash SHA-256 calculado por el servidor** a partir de sus datos. La base de datos impide modificar o borrar certificados, y el endpoint de verificación recalcula el hash para detectar si los datos guardados ya no coinciden con él.
 
-> Estado: MVP. El registro del hash en blockchain (Avalanche) está previsto pero **todavía no está integrado**; el campo `txHash` queda vacío hasta entonces.
+> **Estado: MVP.** El hash vive en la misma base que los datos que protege: detecta cambios hechos sin recalcularlo, pero **no es todavía una prueba frente a quien controla la base** (podría cambiar los datos y recalcular el hash). Esa garantía llegará con el anclaje del hash en blockchain (Avalanche), que **todavía no está integrado**; el campo `txHash` queda vacío. Ver [Integridad de los certificados](#integridad-de-los-certificados).
 
 ## Funcionalidades
 
 - Crear certificados (título y destinatario).
 - Listar certificados y ver el detalle de cada uno.
-- Verificar la integridad de un certificado (`/api/certificates/:id/verify`).
-- Protección de integridad en PostgreSQL: un trigger rechaza cualquier `UPDATE` de los datos del certificado; solo permite completar `txHash` una única vez.
+- Verificar la integridad de un certificado por API (`GET /api/certificates/:id/verify`; la interfaz web todavía no lo muestra) o de todos a la vez (`pnpm verify:certificates`).
+- Inmutabilidad en PostgreSQL: un trigger rechaza cualquier `UPDATE` de los datos del certificado (solo permite completar `txHash` una única vez), y `DELETE` y `TRUNCATE` están bloqueados por permisos y triggers.
+- Privilegios mínimos: NestJS se conecta como `spaceproof_app` (solo `SELECT` e `INSERT`); las migraciones, como `spaceproof_owner`, propietario de las tablas.
 
 ## Arquitectura
 
@@ -21,7 +22,7 @@ Navegador ──HTTPS──▶ Caddy ──▶ Frontend (Next.js) ──HTTP─�
 
 - **Frontend** (`frontend/`): Next.js con App Router. Las páginas se renderizan en el servidor y consultan al backend por HTTP; el formulario usa Server Actions. Además, `next.config.ts` reenvía `/api/*` al backend.
 - **Backend** (`backend/`): API REST en NestJS bajo el prefijo `/api`. Accede a PostgreSQL con Prisma ORM 7 mediante el adaptador `@prisma/adapter-pg`.
-- **Base de datos**: PostgreSQL 17, con migraciones de Prisma.
+- **Base de datos**: PostgreSQL 17, con migraciones de Prisma, roles separados (ver [Base de datos y roles](#base-de-datos-y-roles)) y triggers de inmutabilidad.
 - **Producción**: Docker Compose con Caddy como proxy inverso (HTTPS automático y autenticación básica).
 
 ### Integridad de los certificados
@@ -34,6 +35,42 @@ Al crear un certificado, el backend genera el `id` y la fecha de emisión y calc
 
 Los textos se normalizan a Unicode NFC. El cliente nunca envía el hash. La lógica está en `backend/src/certificates/certificate-hash.ts`.
 
+| La verificación detecta | La verificación **no** detecta (todavía) |
+|---|---|
+| Un cambio en `id`, `title`, `recipient` o `createdAt` hecho sin recalcular el hash | Un cambio de datos **y** hash a la vez: el algoritmo es público y no hay anclaje externo |
+| Un registro insertado con un hash que no corresponde a sus datos | Que la fecha `createdAt` sea la real (viene del reloj del servidor) |
+| | Quién emitió el certificado (no hay identidad de emisor) |
+| | El contenido de ningún archivo: el hash cubre solo esos cuatro campos |
+
+Las protecciones de la base (permisos y triggers) frenan a la aplicación, pero no al propietario de las tablas ni al superusuario: ver [Riesgos de las credenciales](#riesgos-de-las-credenciales).
+
+## Base de datos y roles
+
+| Rol | Uso | Puede |
+|---|---|---|
+| `POSTGRES_USER` (p. ej. `spaceproof`) | Superusuario administrador. Solo ejecuta el bootstrap (`db/init/10-roles.sh`) y tareas de mantenimiento | Todo |
+| `spaceproof_owner` | Propietario de bases, tablas y funciones. Ejecuta las migraciones (`MIGRATION_DATABASE_URL`) | Cambiar el esquema; no es superusuario ni puede crear bases o roles |
+| `spaceproof_app` | NestJS en ejecución (`DATABASE_URL`) | `SELECT` e `INSERT` en `Certificate`; nada más |
+
+`backend/db/init/10-roles.sh` crea los roles y las bases, transfiere al propietario los objetos existentes y revoca a `PUBLIC` el acceso a todas las bases (incluidas `postgres` y `template1`). Es idempotente: se puede repetir sin perder datos y aplica las contraseñas actuales de `.env`. En un volumen nuevo la imagen de PostgreSQL lo ejecuta sola; en uno existente, con `pnpm db:bootstrap`. Los permisos de tablas los conceden las migraciones; los tests de privilegios (`test/db-privileges.e2e-spec.ts`) comprueban el conjunto exacto.
+
+### Riesgos de las credenciales
+
+- **`spaceproof_owner`** puede desactivar triggers (`ALTER TABLE … DISABLE TRIGGER`), cambiar datos y recalcular hashes, y borrar tablas (`DROP TABLE` y `DROP SCHEMA` no disparan los triggers de borrado). Usala solo para migraciones: nunca en el backend ni en scripts de la aplicación.
+- **El superusuario** puede todo, incluido saltarse los triggers con `session_replication_role`. Solo para el bootstrap y mantenimiento.
+- En desarrollo, `backend/.env` contiene las dos URLs porque la Prisma CLI necesita la del propietario. NestJS solo lee `DATABASE_URL`.
+
+## Entornos
+
+| | Desarrollo | Tests e2e | Producción |
+|---|---|---|---|
+| Configuración | `backend/.env` | `backend/.env.test` (o `E2E_ENV_FILE`) | `.env` en la raíz del servidor |
+| PostgreSQL | `backend/docker-compose.yml`, en `127.0.0.1:POSTGRES_PORT` | El mismo servidor que desarrollo | `docker-compose.prod.yml`, solo red interna |
+| Base | `spaceproof` | `spaceproof_test`, **se reconstruye en cada ejecución** | `spaceproof` |
+| Base shadow | `spaceproof_shadow` (solo `prisma migrate dev`) | — | — |
+| Migraciones | `prisma migrate dev` / `deploy` como owner | `migrate deploy` automático antes de los tests | Solo `migrate deploy`, servicio `migrate` |
+| Datos | Se conservan | Descartables | Se conservan; **sin certificados de prueba**: no se pueden borrar |
+
 ## Tecnologías
 
 | Capa | Tecnología |
@@ -42,39 +79,52 @@ Los textos se normalizan a Unicode NFC. El cliente nunca envía el hash. La lóg
 | Backend | NestJS 11, class-validator, TypeScript |
 | Datos | PostgreSQL 17, Prisma ORM 7 (`prisma-client`, `@prisma/adapter-pg`) |
 | Producción | Docker Compose, Caddy 2.11 |
+| CI | GitHub Actions (`.github/workflows/ci.yml`) |
 | Gestores de paquetes | pnpm (backend), npm (frontend y raíz) |
 
 ## Estructura del repositorio
 
 ```
 .
-├── backend/                 API NestJS + Prisma
-│   ├── prisma/              schema.prisma y migraciones
-│   ├── src/                 código fuente
-│   └── test/                tests e2e
-├── frontend/                aplicación Next.js
-├── docker-compose.prod.yml  stack de producción
-├── Caddyfile                proxy inverso, TLS y autenticación básica
-├── .env.production.example  variables de producción (plantilla)
-└── package.json             scripts para ejecutar ambas apps en desarrollo
+├── .github/workflows/ci.yml     CI: lint, build, tests, e2e, migraciones, Compose
+├── backend/                     API NestJS + Prisma
+│   ├── db/init/10-roles.sh      bootstrap de roles y bases de PostgreSQL
+│   ├── prisma/                  schema.prisma y migraciones
+│   ├── src/                     código fuente
+│   │   └── scripts/             verify-certificates (verificación masiva)
+│   ├── test/                    tests e2e
+│   ├── docker-compose.yml       PostgreSQL de desarrollo
+│   ├── .env.example             plantilla de backend/.env
+│   └── .env.test.example        plantilla de backend/.env.test
+├── frontend/                    aplicación Next.js
+├── docs/backups.md              backups, restauración y verificación
+├── docker-compose.prod.yml      stack de producción
+├── Caddyfile                    proxy inverso, TLS y autenticación básica
+├── .env.production.example      variables de producción (plantilla)
+└── package.json                 scripts para ejecutar ambas apps en desarrollo
 ```
 
 ## API
 
 | Método | Ruta | Descripción |
 |---|---|---|
-| `GET` | `/api` | Healthcheck |
-| `POST` | `/api/certificates` | Crea un certificado. Body: `{ "title": string, "recipient": string }` (máx. 200 caracteres cada uno) |
+| `GET` | `/api` | Responde `Hello World!` sin consultar la base. Se mantiene porque lo usa el healthcheck actual de producción |
+| `GET` | `/api/health/live` | Liveness: el proceso responde. No consulta la base |
+| `GET` | `/api/health/ready` | Readiness: `SELECT 1` en PostgreSQL (máx. 2 s). `200 {status, database}` o `503` |
+| `POST` | `/api/certificates` | Crea un certificado. Body JSON: `{ "title": string, "recipient": string }` (máx. 200 caracteres cada uno) |
 | `GET` | `/api/certificates` | Lista certificados, del más reciente al más antiguo |
 | `GET` | `/api/certificates/:id` | Detalle (404 si no existe, 400 si el id no es un UUID) |
 | `GET` | `/api/certificates/:id/verify` | Recalcula el hash y devuelve `{ valid, storedHash, computedHash }` |
+
+- **Escrituras solo en JSON**: `POST`, `PUT`, `PATCH` y `DELETE` con un `Content-Type` distinto de `application/json` reciben `415`. Es la protección CSRF: otro sitio puede hacer que el navegador envíe formularios o `text/plain` con las credenciales guardadas (la autenticación básica de Caddy), pero no JSON sin un *preflight* CORS, que la API nunca responde. Las Server Actions de Next.js tienen su propia comprobación de `Origin`.
+- **`X-Request-Id`**: toda respuesta lo incluye (se reutiliza el recibido si es un identificador simple). Los errores 5xx lo devuelven en el cuerpo y lo registran en el log.
+- **Errores**: `500` genérico, o `503` si PostgreSQL no está disponible. El log registra el código de Prisma, el SQLSTATE y el mensaje de PostgreSQL, nunca el cuerpo de la solicitud (contiene datos personales).
 
 ## Requisitos
 
 - Node.js 22
 - pnpm 10 (backend) y npm (frontend)
-- PostgreSQL 17, instalado localmente o mediante Docker
-- Docker Engine con el plugin Compose (opcional en desarrollo; necesario para producción)
+- Docker Engine con el plugin Compose (PostgreSQL de desarrollo y producción)
 
 ## Ejecución local
 
@@ -91,37 +141,45 @@ La instalación del backend ejecuta `prisma generate` automáticamente.
 
 ```bash
 cp backend/.env.example backend/.env
+cp backend/.env.test.example backend/.env.test
 ```
 
-Editá `backend/.env` con los datos de tu PostgreSQL. **Nunca subas archivos `.env` al repositorio.**
+Editá ambos archivos: generá cada contraseña con `openssl rand -hex 32` y usá las mismas contraseñas de roles en los dos. **Nunca subas archivos `.env` al repositorio.**
 
 | Variable (`backend/.env`) | Uso |
 |---|---|
-| `DATABASE_URL` | Conexión de Prisma y NestJS, p. ej. `postgresql://usuario:contraseña@localhost:5432/spaceproof?schema=public` |
+| `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, `POSTGRES_PORT` | Superusuario administrador del PostgreSQL de desarrollo y puerto local. Ni la app ni Prisma lo usan |
+| `SPACEPROOF_OWNER_PASSWORD`, `SPACEPROOF_APP_PASSWORD` | Contraseñas de `spaceproof_owner` y `spaceproof_app` (las aplica el bootstrap) |
+| `DATABASE_URL` | NestJS y `verify:certificates`, como `spaceproof_app`, sobre `spaceproof` |
+| `MIGRATION_DATABASE_URL` | Prisma CLI (migraciones), como `spaceproof_owner`, sobre `spaceproof` |
+| `SHADOW_DATABASE_URL` | Base temporal de `prisma migrate dev`, como `spaceproof_owner`, sobre `spaceproof_shadow` |
 | `PORT` | Puerto del backend (por defecto `3001`) |
-| `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, `POSTGRES_PORT` | Solo para el PostgreSQL de desarrollo con Docker (`backend/docker-compose.yml`); deben coincidir con `DATABASE_URL` |
 
-El frontend no necesita archivo `.env` en desarrollo: usa `BACKEND_URL`, que por defecto es `http://localhost:3001`.
+`backend/.env.test` define `DATABASE_URL` (app) y `MIGRATION_DATABASE_URL` (owner) sobre `spaceproof_test`. El frontend no necesita `.env` en desarrollo: usa `BACKEND_URL`, que por defecto es `http://localhost:3001`.
 
 ### 3. Base de datos
 
-Si no tenés PostgreSQL instalado, podés levantar uno con Docker:
-
 ```bash
 cd backend
-pnpm db:up             # docker compose up -d (PostgreSQL 17 en el puerto 5432)
+pnpm db:up             # docker compose up -d: PostgreSQL 17 en 127.0.0.1:POSTGRES_PORT
+pnpm db:bootstrap      # solo en un volumen ya existente (en uno nuevo corre solo)
 ```
+
+Crea `spaceproof`, `spaceproof_test` y `spaceproof_shadow`. Si cambiás una contraseña de rol en `.env`, volvé a ejecutar `pnpm db:bootstrap` (y recreá el contenedor con `pnpm db:up` para que reciba la variable nueva).
 
 ### 4. Migraciones de Prisma
 
 ```bash
 cd backend
-pnpm prisma:migrate    # prisma migrate dev: aplica las migraciones pendientes
+pnpm prisma:migrate    # prisma migrate dev, como spaceproof_owner
 ```
 
-- En **desarrollo**, `prisma migrate dev` aplica las migraciones y crea nuevas cuando cambia `prisma/schema.prisma`.
-- En **producción** se usa únicamente `prisma migrate deploy` (ver más abajo), que aplica las pendientes y nunca borra datos.
+- Las migraciones requieren haber ejecutado el bootstrap: nombran a `spaceproof_app`.
+- En **producción** se usa únicamente `prisma migrate deploy`: aplica las pendientes y nunca borra datos.
 - No edites migraciones ya aplicadas: creá una nueva.
+- Prisma no gestiona permisos: cada tabla nueva necesita su `GRANT` para `spaceproof_app` escrito en la migración (`prisma migrate dev --create-only` y editar el SQL). Los tests de privilegios fallan si falta o sobra alguno.
+
+> ⚠️ **`prisma migrate reset` borra la base de desarrollo** (elimina el esquema y lo recrea), y `prisma migrate dev` **propone ese reset** cuando detecta que la base no coincide con el historial de migraciones. Los triggers de borrado no lo impiden: el propietario puede eliminar tablas. Ante esa propuesta, respondé que no y revisá la causa; para solo aplicar migraciones pendientes usá `pnpm exec prisma migrate deploy`. Hacé un backup antes (ver [docs/backups.md](docs/backups.md)).
 
 ### 5. Ejecutar
 
@@ -134,17 +192,35 @@ npm run dev
 - Frontend: <http://localhost:3000>
 - Backend: <http://localhost:3001/api>
 
-### Tests
+## Tests
 
 ```bash
 cd backend
-pnpm test        # unitarios
-pnpm test:e2e    # e2e contra la base de DATABASE_URL
+pnpm test        # unitarios (sin base de datos)
+pnpm test:e2e    # e2e contra spaceproof_test
 ```
 
-> Los tests e2e crean y borran registros en la base configurada en `DATABASE_URL`. **Nunca los ejecutes contra producción.**
+Los tests e2e usan exclusivamente `backend/.env.test` (o el archivo indicado en `E2E_ENV_FILE`, p. ej. en CI). Antes de cada ejecución reconstruyen `spaceproof_test` como `spaceproof_owner`: borran su esquema `public` y aplican las migraciones. Para no operar nunca sobre otra base, se niegan a arrancar si:
+
+- la base no es `spaceproof_test` o el host no es `localhost`/`127.0.0.1`;
+- los roles no son `spaceproof_app` (`DATABASE_URL`) y `spaceproof_owner` (`MIGRATION_DATABASE_URL`);
+- la URL tiene parámetros distintos de `schema` (node-postgres y Prisma permiten que `?host=` o `?user=` reemplacen los de la URL);
+- la sesión real, ya conectada, no es la base y el rol esperados.
+
+Incluyen pruebas de privilegios (T1–T15), CSRF, healthchecks y verificación masiva.
+
+**CI** (`.github/workflows/ci.yml`): lint, build y tests unitarios del backend; e2e con un PostgreSQL nuevo (bootstrap en `initdb` y repetido, migraciones, comprobación de drift, verificación masiva); lint y build del frontend sin backend; y validación de `docker-compose.prod.yml` con valores ficticios. No usa secretos: genera contraseñas descartables en cada ejecución.
+
+## Operación
+
+- **Healthchecks**: `/api/health/live` (proceso) y `/api/health/ready` (PostgreSQL).
+- **Logs**: texto en desarrollo y una línea JSON por evento en producción (`NODE_ENV=production`). Los errores incluyen `requestId`, método, ruta (el patrón, p. ej. `/api/certificates/:id`), código de Prisma y SQLSTATE; nunca contraseñas, URLs de conexión ni cuerpos de solicitud.
+- **Verificación masiva**: `pnpm build && pnpm verify:certificates` recalcula el hash de todos los certificados en una transacción de solo lectura y muestra total, válidos, inválidos, errores y los ids afectados. Código de salida: `0` todo válido, `1` hay inválidos o ilegibles, `2` la verificación falló.
+- **Backups y restauración**: [docs/backups.md](docs/backups.md).
 
 ## Despliegue con Docker Compose y Caddy
+
+> ⚠️ **Pendiente de adaptar a los roles de PostgreSQL.** `docker-compose.prod.yml` todavía no define `MIGRATION_DATABASE_URL` ni ejecuta el bootstrap de roles, y las migraciones desde `20261113060000_app_role_grants` requieren los roles `spaceproof_app` y `spaceproof_owner`. **No despliegues esta versión** hasta adaptar producción: el servicio `migrate` fallaría. Esta sección describe el stack actual.
 
 El stack de producción (`docker-compose.prod.yml`) levanta:
 
@@ -212,6 +288,8 @@ Ejecutá siempre las migraciones con `--build`: `migrate` está en un *profile* 
 
 ## Seguridad
 
-- La aplicación no tiene cuentas de usuario: en producción, el acceso se protege con la autenticación básica de Caddy.
-- PostgreSQL no publica puertos; solo es accesible desde la red interna de Docker.
-- Los secretos viven únicamente en archivos `.env`, que están excluidos de Git y de las imágenes Docker.
+- La aplicación no tiene cuentas de usuario: en producción, el acceso se protege con la autenticación básica de Caddy (una credencial compartida).
+- PostgreSQL no publica puertos en producción; en desarrollo solo escucha en `127.0.0.1`.
+- El backend se conecta con un rol sin privilegios de administración que no puede modificar ni borrar certificados.
+- Escrituras de la API solo en JSON (protección CSRF; ver [API](#api)).
+- Los secretos viven únicamente en archivos `.env`, que están excluidos de Git y de las imágenes Docker. Los backups contienen datos personales: ver [docs/backups.md](docs/backups.md).

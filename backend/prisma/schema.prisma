@@ -10,7 +10,8 @@ datasource db {
 }
 
 // Records are immutable once created (enforced by a database trigger, see the
-// certificate_integrity migration); only txHash may be filled in once.
+// certificate_integrity migration); only txHash may be filled in once, by the
+// owner role. They cannot be deleted (certificate_no_delete migration).
 model Certificate {
   id          String   @id @default(uuid())
   title       String
