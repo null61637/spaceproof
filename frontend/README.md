@@ -9,6 +9,6 @@ npm run lint
 npm run build   # no necesita el backend en ejecución
 ```
 
-- `BACKEND_URL` (por defecto `http://localhost:3001`): backend usado por las páginas del servidor, las Server Actions y el proxy `/api/*` (`next.config.ts`). En la imagen Docker se fija al construir.
-- `app/`: páginas, formulario (`certificate-form.tsx`) y Server Action (`actions.ts`).
-- `lib/api.ts`: cliente del backend, solo del lado del servidor.
+- `BACKEND_URL` (por defecto `http://localhost:3001`): backend usado por las páginas del servidor y por el proxy `/api/*` (`app/api/[...path]/route.ts`), que la lee al ejecutarse.
+- `app/`: páginas, formulario de emisión (`certificate-form.tsx`), verificación de archivos (`certificates/[id]/verify-file.tsx`) y proxy en flujo hacia el backend (`api/[...path]/route.ts`).
+- `lib/api.ts`: lecturas del backend, solo del lado del servidor. `lib/upload.ts`: subida de archivos desde el navegador. `lib/certificates.ts`: tipos y utilidades compartidos.

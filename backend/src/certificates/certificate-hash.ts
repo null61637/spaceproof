@@ -115,14 +115,15 @@ export interface VersionedCertificate extends CertificateHashInput {
 }
 
 /**
- * Recomputes the hash of a stored certificate with the function of its own
- * version. Throws for an unknown version or a v2 record missing required
- * fields: such a record cannot be verified, which is different from invalid.
+ * The canonical text behind a stored certificate's hash, built with the
+ * function of its own version. Throws for an unknown version or a v2 record
+ * missing required fields: such a record cannot be verified, which is
+ * different from invalid.
  */
-export function computeHashForVersion(record: VersionedCertificate): string {
+export function canonicalizeForVersion(record: VersionedCertificate): string {
   switch (record.hashVersion) {
     case 1:
-      return computeCertificateHash(record);
+      return canonicalizeCertificate(record);
     case 2: {
       const { fileSha256, fileSizeBytes, satellite, acquiredAt } = record;
       if (
@@ -133,7 +134,7 @@ export function computeHashForVersion(record: VersionedCertificate): string {
       ) {
         throw new RangeError('Version 2 certificate with missing fields');
       }
-      return computeManifestV2Hash({
+      return canonicalizeManifestV2({
         ...record,
         fileSha256,
         fileSizeBytes,
@@ -144,4 +145,11 @@ export function computeHashForVersion(record: VersionedCertificate): string {
     default:
       throw new RangeError(`Unsupported hash version ${record.hashVersion}`);
   }
+}
+
+/** Recomputes the hash of a stored certificate of any version. */
+export function computeHashForVersion(record: VersionedCertificate): string {
+  return createHash('sha256')
+    .update(canonicalizeForVersion(record), 'utf8')
+    .digest('hex');
 }

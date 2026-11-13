@@ -1,5 +1,6 @@
 import Link from "next/link";
-import { formatDate, getCertificates } from "@/lib/api";
+import { getCertificates } from "@/lib/api";
+import { formatDate } from "@/lib/certificates";
 
 export async function CertificateList() {
   const certificates = await getCertificates();
@@ -7,7 +8,7 @@ export async function CertificateList() {
   if (certificates.length === 0) {
     return (
       <p className="rounded-lg border border-dashed border-zinc-300 px-4 py-10 text-center text-sm text-zinc-500 dark:border-zinc-700 dark:text-zinc-400">
-        Todavía no hay certificados. Creá el primero con el formulario.
+        Todavía no hay certificados. Certificá el primer archivo con el formulario.
       </p>
     );
   }

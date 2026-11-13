@@ -5,6 +5,40 @@ import { App } from 'supertest/types';
 import { AppModule } from '../src/app.module';
 import { setupApp } from '../src/app.setup';
 import { PrismaService } from '../src/prisma/prisma.service';
+import { issue, metadata, metadataHeader, tiff, verifyFile } from './files';
+
+// Everything a user declares when issuing. None of it may reach the logs.
+const secret = {
+  ...metadata,
+  title: 'Secret title',
+  recipient: 'Jane Personal',
+  satellite: 'Private satellite',
+  sensor: 'Private sensor',
+  sceneId: 'PRIVATE_SCENE_1',
+  fileName: 'private-file-name.tif',
+};
+
+/** Replaces every log level with a recorder, until jest.restoreAllMocks(). */
+function captureLogs(): unknown[] {
+  const logged: unknown[] = [];
+  for (const level of ['log', 'error', 'warn', 'debug', 'verbose'] as const) {
+    jest
+      .spyOn(Logger.prototype, level)
+      .mockImplementation((...args: unknown[]) => {
+        logged.push(...args);
+      });
+  }
+  return logged;
+}
+
+function expectNoUserData(logged: unknown[]): void {
+  const text = JSON.stringify(logged);
+  for (const value of Object.values(secret)) {
+    expect(text).not.toContain(value);
+  }
+  expect(text).not.toContain(metadataHeader(secret));
+  expect(text.toLowerCase()).not.toContain('x-spaceproof-metadata');
+}
 
 async function createApp(prisma?: unknown): Promise<INestApplication<App>> {
   let builder = Test.createTestingModule({ imports: [AppModule] });
@@ -48,6 +82,26 @@ describe('Health and observability (e2e)', () => {
       expect(res.headers['x-request-id']).toMatch(/^[0-9a-f-]{36}$/);
     });
 
+    it('logs nothing a user declared, whether the upload succeeds or is rejected', async () => {
+      const logged = captureLogs();
+      try {
+        const created = await issue(app, tiff(), secret).expect(201);
+        const { id } = created.body as { id: string };
+        await verifyFile(app, id, tiff()).expect(200);
+        await verifyFile(app, id, tiff(10)).expect(200);
+        // Rejected in every way the route can reject.
+        await issue(app, Buffer.from('not a tiff'), secret).expect(415);
+        await issue(app, Buffer.alloc(0), secret).expect(400);
+        await issue(app, tiff(), { ...secret, acquiredAt: 'x' }).expect(400);
+        await issue(app, tiff(), secret)
+          .set('Content-Type', 'text/plain')
+          .expect(415);
+      } finally {
+        jest.restoreAllMocks();
+      }
+      expectNoUserData(logged);
+    });
+
     it('keeps a plain incoming request id and replaces an unsafe one', async () => {
       const kept = await request(app.getHttpServer())
         .get('/api')
@@ -84,7 +138,11 @@ describe('Health and observability (e2e)', () => {
     const refused = new PrismaClientKnownRequestError('ECONNREFUSED');
 
     const prisma = {
-      certificate: { create: jest.fn(), findMany: jest.fn() },
+      certificate: {
+        create: jest.fn(),
+        findMany: jest.fn(),
+        findUnique: jest.fn(),
+      },
       $queryRaw: jest.fn(),
       $connect: jest.fn(),
       $disconnect: jest.fn(),
@@ -97,13 +155,8 @@ describe('Health and observability (e2e)', () => {
     });
 
     beforeEach(() => {
-      logged = [];
-      jest
-        .spyOn(Logger.prototype, 'error')
-        .mockImplementation((...args: unknown[]) => {
-          logged.push(...args);
-        });
-      jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+      jest.clearAllMocks();
+      logged = captureLogs();
     });
 
     afterEach(() => {
@@ -116,10 +169,8 @@ describe('Health and observability (e2e)', () => {
 
     it('logs a permission error with SQLSTATE and request id, never the body', async () => {
       prisma.certificate.create.mockRejectedValue(permissionDenied);
-      const res = await request(app.getHttpServer())
-        .post('/api/certificates')
+      const res = await issue(app, tiff(), secret)
         .set('X-Request-Id', 'req-42')
-        .send({ title: 'Secret title', recipient: 'Jane Personal' })
         .expect(500);
 
       expect(res.body).toEqual({
@@ -138,10 +189,30 @@ describe('Health and observability (e2e)', () => {
           dbMessage: 'permission denied for table Certificate',
         }),
       );
-      const text = JSON.stringify(logged);
-      expect(text).not.toContain('Secret title');
-      expect(text).not.toContain('Jane Personal');
-      expect(text).not.toContain('invocation');
+      expectNoUserData(logged);
+      expect(JSON.stringify(logged)).not.toContain('invocation');
+    });
+
+    it('issues nothing and answers 503 when PostgreSQL goes away after the upload', async () => {
+      prisma.certificate.create.mockRejectedValue(refused);
+      const res = await issue(app, tiff(), secret).expect(503);
+      expect(res.body).toMatchObject({
+        statusCode: 503,
+        message: 'Service unavailable',
+      });
+      // One attempt, no retry that could store a second certificate.
+      expect(prisma.certificate.create).toHaveBeenCalledTimes(1);
+      expectNoUserData(logged);
+    });
+
+    it('does not read the file when the certificate lookup fails', async () => {
+      prisma.certificate.findUnique.mockRejectedValue(refused);
+      await verifyFile(
+        app,
+        '00000000-0000-4000-8000-000000000001',
+        tiff(),
+      ).expect(503);
+      expectNoUserData(logged);
     });
 
     it('answers 503 when PostgreSQL is unreachable', async () => {

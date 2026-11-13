@@ -1,7 +1,5 @@
 import type { NextConfig } from "next";
 
-import { backendUrl } from "./lib/config";
-
 const nextConfig: NextConfig = {
   // Self-contained server in .next/standalone, used by the production image.
   output: "standalone",
@@ -17,10 +15,9 @@ const nextConfig: NextConfig = {
       },
     },
   },
-  // Proxy /api/* to the NestJS backend so the browser sees a single origin (no CORS).
-  async rewrites() {
-    return [{ source: "/api/:path*", destination: `${backendUrl}/api/:path*` }];
-  },
+  // /api/* reaches the NestJS backend through app/api/[...path]/route.ts, not
+  // through `rewrites()`: the rewrite proxy buffers request bodies in memory
+  // and truncates them at 10 MB.
 };
 
 export default nextConfig;

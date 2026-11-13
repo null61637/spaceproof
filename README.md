@@ -1,14 +1,15 @@
 # SpaceProof
 
-SpaceProof es una aplicación web para emitir y verificar certificados. Cada certificado se guarda en PostgreSQL junto con un **hash SHA-256 calculado por el servidor** a partir de sus datos. La base de datos impide modificar o borrar certificados, y el endpoint de verificación recalcula el hash para detectar si los datos guardados ya no coinciden con él.
+SpaceProof es una aplicación web para certificar la integridad de archivos satelitales (TIFF) y de sus metadatos. El servidor calcula el SHA-256 del archivo, sin guardarlo, y lo vincula con los metadatos declarados en un manifiesto. Cada certificado se guarda en PostgreSQL junto con un **hash SHA-256 calculado por el servidor** a partir de sus datos. La base de datos impide modificar o borrar certificados, y el endpoint de verificación recalcula el hash para detectar si los datos guardados ya no coinciden con él.
 
 > **Estado: MVP.** El hash vive en la misma base que los datos que protege: detecta cambios hechos sin recalcularlo, pero **no es todavía una prueba frente a quien controla la base** (podría cambiar los datos y recalcular el hash). Esa garantía llegará con el anclaje del hash en blockchain (Avalanche), que **todavía no está integrado**; el campo `txHash` queda vacío. Ver [Integridad de los certificados](#integridad-de-los-certificados).
 
 ## Funcionalidades
 
-- Crear certificados (título y destinatario).
+- Certificar un archivo `.tif`/`.tiff` de hasta 200 MB junto con sus metadatos declarados. El archivo no se conserva: solo su SHA-256, tamaño y nombre. Solo se comprueba la firma TIFF.
+- Verificar un archivo contra su certificado, desde la interfaz o por API: detecta cualquier cambio en el archivo o en los metadatos. **No prueba** la procedencia del archivo, la veracidad de los metadatos ni la autoría.
 - Listar certificados y ver el detalle de cada uno.
-- Verificar la integridad de un certificado por API (`GET /api/certificates/:id/verify`; la interfaz web todavía no lo muestra) o de todos a la vez (`pnpm verify:certificates`).
+- Verificar la integridad de un certificado por API (`GET /api/certificates/:id/verify`) o de todos a la vez (`pnpm verify:certificates`).
 - Inmutabilidad en PostgreSQL: un trigger rechaza cualquier `UPDATE` de los datos del certificado (solo permite completar `txHash` una única vez), y `DELETE` y `TRUNCATE` están bloqueados por permisos y triggers.
 - Privilegios mínimos: NestJS se conecta como `spaceproof_app` (solo `SELECT` e `INSERT`); las migraciones, como `spaceproof_owner`, propietario de las tablas.
 
@@ -16,18 +17,18 @@ SpaceProof es una aplicación web para emitir y verificar certificados. Cada cer
 
 ```
 Navegador ──HTTPS──▶ Caddy ──▶ Frontend (Next.js) ──HTTP──▶ Backend (NestJS) ──▶ PostgreSQL
-                    (TLS +      UI + Server Actions          API REST /api        (red interna,
+                    (TLS +      UI                           API REST /api        (red interna,
                    basic auth)  proxy de /api/*              Prisma 7             sin puertos públicos)
 ```
 
-- **Frontend** (`frontend/`): Next.js con App Router. Las páginas se renderizan en el servidor y consultan al backend por HTTP; el formulario usa Server Actions. Además, `next.config.ts` reenvía `/api/*` al backend.
+- **Frontend** (`frontend/`): Next.js con App Router. Las páginas se renderizan en el servidor y consultan al backend por HTTP; el navegador envía los archivos a `/api/*`, que el Route Handler `app/api/[...path]/route.ts` reenvía al backend en flujo (sin `rewrites()`, que copia el cuerpo en memoria y lo corta a los 10 MB).
 - **Backend** (`backend/`): API REST en NestJS bajo el prefijo `/api`. Accede a PostgreSQL con Prisma ORM 7 mediante el adaptador `@prisma/adapter-pg`.
 - **Base de datos**: PostgreSQL 17, con migraciones de Prisma, roles separados (ver [Base de datos y roles](#base-de-datos-y-roles)) y triggers de inmutabilidad.
 - **Producción**: Docker Compose con Caddy como proxy inverso (HTTPS automático y autenticación básica).
 
 ### Integridad de los certificados
 
-Al crear un certificado, el backend genera el `id` y la fecha de emisión y calcula el hash en el mismo `INSERT`, sobre una serialización canónica versionada:
+Al emitir un certificado, el backend genera el `id` y la fecha de emisión y calcula el hash en el mismo `INSERT`, sobre una serialización canónica versionada. Los certificados de archivo usan el manifiesto v2 ([docs/manifiesto-v2.md](docs/manifiesto-v2.md)); los emitidos antes (v1, solo título y destinatario) se siguen verificando con esta forma:
 
 ```json
 {"v":1,"id":"…","title":"…","recipient":"…","createdAt":"2026-01-02T03:04:05.006Z"}
@@ -111,12 +112,15 @@ Las protecciones de la base (permisos y triggers) frenan a la aplicación, pero 
 | `GET` | `/api` | Responde `Hello World!` sin consultar la base. Se mantiene porque lo usa el healthcheck actual de producción |
 | `GET` | `/api/health/live` | Liveness: el proceso responde. No consulta la base |
 | `GET` | `/api/health/ready` | Readiness: `SELECT 1` en PostgreSQL (máx. 2 s). `200 {status, database}` o `503` |
-| `POST` | `/api/certificates` | Crea un certificado. Body JSON: `{ "title": string, "recipient": string }` (máx. 200 caracteres cada uno) |
+| `POST` | `/api/certificates` | Emite el certificado de un archivo: cuerpo crudo `image/tiff` (hasta 200 MB) y metadatos en la cabecera `X-SpaceProof-Metadata`. Contrato: [docs/API_EMISION_VERIFICACION.md](docs/API_EMISION_VERIFICACION.md) |
 | `GET` | `/api/certificates` | Lista certificados, del más reciente al más antiguo |
 | `GET` | `/api/certificates/:id` | Detalle (404 si no existe, 400 si el id no es un UUID) |
-| `GET` | `/api/certificates/:id/verify` | Recalcula el hash y devuelve `{ valid, storedHash, computedHash }` |
+| `GET` | `/api/certificates/:id/verify` | Recalcula el hash del registro y consulta el anclaje. Devuelve `status`, `checks` y, por compatibilidad, `valid` |
+| `POST` | `/api/certificates/:id/verify-file` | Verifica un archivo (cuerpo crudo `image/tiff`) contra el certificado |
+| `GET` | `/api/certificates/:id/manifest` | Texto canónico exacto cuyo SHA-256 es el hash del certificado |
 
-- **Escrituras solo en JSON**: `POST`, `PUT`, `PATCH` y `DELETE` con un `Content-Type` distinto de `application/json` reciben `415`. Es la protección CSRF: otro sitio puede hacer que el navegador envíe formularios o `text/plain` con las credenciales guardadas (la autenticación básica de Caddy), pero no JSON sin un *preflight* CORS, que la API nunca responde. Las Server Actions de Next.js tienen su propia comprobación de `Origin`.
+- **Tipo de contenido de las escrituras**: las dos rutas de archivo exigen `image/tiff`; cualquier otra escritura, `application/json`. En otro caso, `415`. Es la protección CSRF: otro sitio puede hacer que el navegador envíe formularios o `text/plain` con las credenciales guardadas (la autenticación básica de Caddy), pero no JSON ni `image/tiff` sin un *preflight* CORS, que la API nunca responde.
+- **Anclaje**: la integración con Avalanche todavía no existe. Ninguna verificación devuelve `VALID`: el mejor resultado es `UNVERIFIABLE` con las comprobaciones de archivo y registro en `MATCH`.
 - **`X-Request-Id`**: toda respuesta lo incluye (se reutiliza el recibido si es un identificador simple). Los errores 5xx lo devuelven en el cuerpo y lo registran en el log.
 - **Errores**: `500` genérico, o `503` si PostgreSQL no está disponible. El log registra el código de Prisma, el SQLSTATE y el mensaje de PostgreSQL, nunca el cuerpo de la solicitud (contiene datos personales).
 
